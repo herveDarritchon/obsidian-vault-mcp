@@ -21,7 +21,7 @@ async function createVaultFixture() {
 
   await fs.writeFile(
     path.join(root, "02-Work/TOR2e/specs/community.md"),
-    "# Community\n\n## Chronicle tab\nInitial content.\n",
+    "# Community\n\n## Chronicle tab\nInitial content.\n\n### Timeline\nNested detail.\n\n## Social tab\nOther content.\n",
     "utf8"
   );
   await fs.writeFile(
@@ -62,6 +62,30 @@ test("read_note refuses blacklisted paths", async () => {
 
   await assert.rejects(
     () => service.readNote("Secrets/token.md"),
+    (error: unknown) => error instanceof RefusalError && /Read denied by policy/.test(error.message)
+  );
+});
+
+test("read_section returns only the requested section content", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const output = await service.readSection("02-Work/TOR2e/specs/community.md", "## Chronicle tab");
+
+  assert.equal(output.path, "02-Work/TOR2e/specs/community.md");
+  assert.equal(output.section_heading, "## Chronicle tab");
+  assert.match(output.content, /^## Chronicle tab/m);
+  assert.match(output.content, /Initial content\./);
+  assert.match(output.content, /### Timeline/);
+  assert.doesNotMatch(output.content, /## Social tab/);
+});
+
+test("read_section refuses blacklisted paths", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  await assert.rejects(
+    () => service.readSection("Secrets/token.md", "## Anything"),
     (error: unknown) => error instanceof RefusalError && /Read denied by policy/.test(error.message)
   );
 });

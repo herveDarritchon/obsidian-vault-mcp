@@ -9,13 +9,14 @@ import { RefusalError } from "./errors.js";
 import { GitHubClient } from "./github.js";
 import { sha256 } from "./lib/hash.js";
 import { normalizeVaultPath, resolveVaultPath, toVaultRelativePath } from "./lib/paths.js";
-import { applyChange, buildDiffSummary } from "./markdown.js";
+import { applyChange, buildDiffSummary, extractSection } from "./markdown.js";
 import { VaultPolicyEngine } from "./policy.js";
 import type {
   ListNotesResult,
   NoteChange,
   ProposeChangeResult,
   ReadNoteResult,
+  ReadSectionResult,
   SearchNotesResult,
   SearchResult,
   UpdateDraftResult
@@ -181,6 +182,18 @@ export class VaultService {
 
   readNote(relativePath: string): Promise<ReadNoteResult> {
     return this.readNoteFromRoot(this.config.vaultRepoRoot, relativePath);
+  }
+
+  async readSection(relativePath: string, sectionHeading: string): Promise<ReadSectionResult> {
+    const note = await this.readNote(relativePath);
+
+    return {
+      path: note.path,
+      section_heading: sectionHeading.trim(),
+      note_sha256: note.sha256,
+      content: extractSection(note.content, sectionHeading),
+      policy: note.policy
+    };
   }
 
   async listNotes(root: string | undefined, limit: number): Promise<ListNotesResult> {

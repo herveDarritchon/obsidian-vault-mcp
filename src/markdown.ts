@@ -18,8 +18,7 @@ function headingDepth(heading: string): number {
   return match[1]!.length;
 }
 
-function replaceSection(fullText: string, heading: string, replacement: string): string {
-  const lines = fullText.split(/\r?\n/);
+function findSectionRange(lines: string[], heading: string): { startIndex: number; endIndex: number; target: string } {
   const target = heading.trim();
   const startIndex = lines.findIndex((line) => line.trim() === target);
 
@@ -39,6 +38,24 @@ function replaceSection(fullText: string, heading: string, replacement: string):
       break;
     }
   }
+
+  return {
+    startIndex,
+    endIndex,
+    target
+  };
+}
+
+export function extractSection(fullText: string, heading: string): string {
+  const lines = fullText.split(/\r?\n/);
+  const { startIndex, endIndex } = findSectionRange(lines, heading);
+
+  return ensureTrailingNewline(lines.slice(startIndex, endIndex).join("\n").trimEnd());
+}
+
+function replaceSection(fullText: string, heading: string, replacement: string): string {
+  const lines = fullText.split(/\r?\n/);
+  const { startIndex, endIndex } = findSectionRange(lines, heading);
 
   const replacementLines = ensureTrailingNewline(replacement.trimEnd()).split(/\r?\n/);
   const nextLines = [

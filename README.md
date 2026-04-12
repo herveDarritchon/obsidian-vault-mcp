@@ -5,7 +5,7 @@ Serveur MCP distant minimal pour un vault Obsidian, avec policy côté serveur e
 ## Ce que fait cette V1
 
 - expose un endpoint MCP distant en Streamable HTTP sur `POST /mcp`
-- fournit 5 tools: `list_notes`, `read_note`, `search_notes`, `update_note_draft`, `propose_change`
+- fournit 6 tools: `list_notes`, `read_note`, `read_section`, `search_notes`, `update_note_draft`, `propose_change`
 - charge une policy YAML et bloque les chemins interdits côté serveur
 - ouvre une PR GitHub après écriture dans un worktree git temporaire, pour éviter de salir le clone principal du vault
 - laisse `update_note_draft` sans effet de bord et réserve `propose_change` au flux d’écriture
@@ -151,7 +151,7 @@ targets:
 
 ### Comment cibler un repo précis
 
-Les 4 tools acceptent maintenant un champ optionnel `target`.
+Les 6 tools acceptent maintenant un champ optionnel `target`.
 
 Si tu ne passes rien :
 
@@ -189,11 +189,12 @@ Prépare d’abord un fichier `.env.e2e` à partir de [.env.e2e.example](/Users/
 npm run test:e2e:real
 ```
 
-Le script vérifie maintenant 5 choses avant même le flux PR:
+Le script vérifie maintenant le flux de lecture avant même le flux PR:
 
 - démarre le serveur MCP localement sur un port éphémère ;
 - appelle les tools via un client MCP HTTP ;
-- valide `read_note`, `search_notes` et `update_note_draft` sur une vraie note ;
+- valide `read_note`, `list_notes`, `search_notes` et `update_note_draft` sur une vraie note ;
+- valide `read_section` sur une note/section stable dédiée ;
 - vérifie qu’une lecture sur une zone blacklistée est bien refusée ;
 - vérifie qu’un `expected_sha256` périmé est bien rejeté ;
 - exécute ensuite `propose_change` si `E2E_SKIP_PROPOSE_CHANGE=false` ;
@@ -238,6 +239,9 @@ Les variables clés sont :
 - `VAULT_REPO_ROOT` : clone local du repo sandbox
 - `VAULT_POLICY_FILE` : policy YAML utilisée pour l’E2E
 - `E2E_NOTE_PATH` : note réelle lue, draftée puis modifiée via PR
+- `E2E_LIST_ROOT` : racine listée via `list_notes`, qui doit contenir `E2E_NOTE_PATH`
+- `E2E_SECTION_PATH` : note stable utilisée pour tester `read_section`
+- `E2E_SECTION_HEADING` : heading exact lu via `read_section`
 - `E2E_BLACKLISTED_PATH` : chemin volontairement interdit, utilisé pour vérifier le refus policy
 - `E2E_SKIP_PROPOSE_CHANGE=true` : mode pré-PR, utile pour un premier passage sans GitHub
 - `E2E_SKIP_PROPOSE_CHANGE=false` : mode complet, avec branche, push et PR
@@ -256,7 +260,10 @@ GITHUB_TOKEN=github_pat_xxx
 
 E2E_NOTE_PATH=Obsician MCP E2E Vault/Bienvenue.md
 E2E_SEARCH_ROOT=Obsician MCP E2E Vault
+E2E_LIST_ROOT=Obsician MCP E2E Vault
 E2E_SEARCH_QUERY=coffre
+E2E_SECTION_PATH=README.md
+E2E_SECTION_HEADING=# obsidian-mcp-e2e-vault
 E2E_BLACKLISTED_PATH=Private/e2e-secret.md
 E2E_SKIP_PROPOSE_CHANGE=false
 E2E_CLEANUP=false
@@ -316,6 +323,18 @@ Entrée:
 }
 ```
 
+### `read_section`
+
+Entrée:
+
+```json
+{
+  "target": "real-vault",
+  "path": "02-Work/TOR2e/specs/community.md",
+  "section_heading": "## Chronicle tab"
+}
+```
+
 ### `list_notes`
 
 Entrée:
@@ -370,7 +389,7 @@ Entrée:
 ## Notes de conception
 
 - `search_notes` fait un scan markdown simple et portable, sans index dédié
-- `replace_section` supporte les headings ATX (`#`, `##`, `###`, etc.)
+- `read_section` et `replace_section` supportent les headings ATX (`#`, `##`, `###`, etc.)
 - `propose_change` refuse les branches déjà existantes pour éviter les collisions silencieuses
 - le serveur est stateless côté transport MCP: un `POST` par appel, pas de session longue
 

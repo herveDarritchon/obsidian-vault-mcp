@@ -27,6 +27,15 @@ const readNoteOutputSchema = {
   policy: z.object(policySchemaDefinition)
 };
 
+const readSectionOutputSchema = {
+  target: z.string(),
+  path: z.string(),
+  section_heading: z.string(),
+  note_sha256: z.string(),
+  content: z.string(),
+  policy: z.object(policySchemaDefinition)
+};
+
 const searchNotesOutputSchema = {
   target: z.string(),
   results: z.array(
@@ -161,6 +170,62 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           result: isRefusalError(error) ? "refusal" : "error",
           target: target ?? config.defaultTarget,
           paths: [path],
+          error: message
+        });
+        return toolError(message);
+      }
+    }
+  );
+
+  server.registerTool(
+    "read_section",
+    {
+      title: "Read note section",
+      description: "Reads a specific markdown section from a note after policy checks.",
+      inputSchema: {
+        target: optionalTargetSchema,
+        path: z.string(),
+        section_heading: z.string()
+      },
+      outputSchema: readSectionOutputSchema,
+      annotations: {
+        readOnlyHint: true
+      }
+    },
+    async ({ target, path, section_heading }) => {
+      const requestId = randomUUID();
+      logEvent("info", "tool_invoked", {
+        requestId,
+        tool: "read_section",
+        target: target ?? config.defaultTarget,
+        paths: [path],
+        sectionHeading: section_heading
+      });
+
+      try {
+        const { targetName, service } = resolveTarget(target);
+        const output = await service.readSection(path, section_heading);
+        logEvent("info", "tool_completed", {
+          requestId,
+          tool: "read_section",
+          result: "success",
+          target: targetName,
+          paths: [output.path],
+          sectionHeading: output.section_heading
+        });
+        return withStructuredContent({
+          target: targetName,
+          ...output
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "read_section failed";
+        logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
+          requestId,
+          tool: "read_section",
+          result: isRefusalError(error) ? "refusal" : "error",
+          target: target ?? config.defaultTarget,
+          paths: [path],
+          sectionHeading: section_heading,
           error: message
         });
         return toolError(message);

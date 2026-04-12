@@ -34,7 +34,11 @@ const e2eConfigSchema = z.object({
   E2E_TARGET: z.string().min(1).optional(),
   E2E_NOTE_PATH: z.string().min(1),
   E2E_SEARCH_ROOT: z.string().min(1).optional().default("02-Work/TOR2e/working"),
+  E2E_LIST_ROOT: z.string().min(1).optional(),
+  E2E_LIST_LIMIT: z.coerce.number().int().min(1).max(200).optional().default(200),
   E2E_SEARCH_QUERY: z.string().min(1).optional().default("test note"),
+  E2E_SECTION_PATH: z.string().min(1).optional().default("README.md"),
+  E2E_SECTION_HEADING: z.string().min(1).optional().default("# obsidian-mcp-e2e-vault"),
   E2E_BLACKLISTED_PATH: z.string().min(1).optional().default("Private/e2e-secret.md"),
   E2E_BASE_BRANCH: z.string().min(1).optional().default("main"),
   E2E_BRANCH_SCOPE: z.string().min(1).optional().default("e2e"),
@@ -353,6 +357,7 @@ async function main() {
   const config = loadConfig();
   const activeTargetName = e2eConfig.E2E_TARGET ?? config.defaultTarget;
   const activeTarget = config.targets[activeTargetName];
+  const listRoot = e2eConfig.E2E_LIST_ROOT ?? e2eConfig.E2E_SEARCH_ROOT;
   const mode = e2eConfig.E2E_SKIP_PROPOSE_CHANGE ? "pre-pr" : "full";
   const app = await createHttpApp({
     ...config,
@@ -387,6 +392,8 @@ async function main() {
   printInfo("Mode", mode);
   printInfo("Note", e2eConfig.E2E_NOTE_PATH);
   printInfo("Search root", e2eConfig.E2E_SEARCH_ROOT);
+  printInfo("List root", listRoot);
+  printInfo("Section", `${e2eConfig.E2E_SECTION_PATH} -> ${e2eConfig.E2E_SECTION_HEADING}`);
   printInfo("Blacklist", e2eConfig.E2E_BLACKLISTED_PATH);
   printInfo("Branch", branchName);
 
@@ -446,7 +453,7 @@ async function main() {
 
     assert.deepEqual(
       tools.tools.map((tool) => tool.name).sort(),
-      ["list_notes", "propose_change", "read_note", "search_notes", "update_note_draft"]
+      ["list_notes", "propose_change", "read_note", "read_section", "search_notes", "update_note_draft"]
     );
 
     const readResult = await runStep(
@@ -466,6 +473,23 @@ async function main() {
 
     assert.equal(readResult.path, e2eConfig.E2E_NOTE_PATH);
     assert.equal(readResult.policy.read, true);
+
+    const listResult = await runStep(
+      "List notes",
+      () =>
+        callTool<{ root: string; results: Array<{ path: string }> }>(client, "list_notes", {
+          target: activeTargetName,
+          root: listRoot,
+          limit: e2eConfig.E2E_LIST_LIMIT
+        }),
+      (result) => `${result.results.length} note(s) listed under ${result.root}`
+    );
+
+    assert.equal(listResult.root, listRoot);
+    assert.ok(
+      listResult.results.some((result) => result.path === e2eConfig.E2E_NOTE_PATH),
+      `Expected list_notes to include ${e2eConfig.E2E_NOTE_PATH} under ${listRoot}`
+    );
 
     const searchResult = await runStep(
       "Search notes",
@@ -509,6 +533,30 @@ async function main() {
     assert.equal(draftResult.current_sha256, readResult.sha256);
     assert.ok(draftResult.draft_content.includes(marker.trim()));
     assert.ok(draftResult.diff_summary.line_delta >= 1);
+
+    const readSectionResult = await runStep(
+      "Read section",
+      () =>
+        callTool<{
+          path: string;
+          section_heading: string;
+          note_sha256: string;
+          content: string;
+          policy: { read: boolean };
+        }>(client, "read_section", {
+          target: activeTargetName,
+          path: e2eConfig.E2E_SECTION_PATH,
+          section_heading: e2eConfig.E2E_SECTION_HEADING
+        }),
+      (result) =>
+        `${result.path} -> ${result.section_heading} (${result.content.split(/\r?\n/).length} line(s))`
+    );
+
+    assert.equal(readSectionResult.path, e2eConfig.E2E_SECTION_PATH);
+    assert.equal(readSectionResult.section_heading, e2eConfig.E2E_SECTION_HEADING);
+    assert.equal(readSectionResult.policy.read, true);
+    assert.ok(readSectionResult.note_sha256.length > 0);
+    assert.match(readSectionResult.content, new RegExp(`^${e2eConfig.E2E_SECTION_HEADING.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "m"));
 
     await runExpectedFailureStep(
       "Refuse blacklisted read",
