@@ -1,3 +1,5 @@
+import yaml from "js-yaml";
+
 import type { ChangeMode, DraftDiffSummary, NoteChange } from "./types.js";
 
 interface NoteExcerptOptions {
@@ -10,6 +12,17 @@ interface NoteExcerpt {
   summary: string;
   excerpt: string;
   headings: string[];
+}
+
+export interface NoteRetrievalMetadata {
+  frontmatter: Record<string, unknown>;
+  contentWithoutFrontmatter: string;
+  title: string | undefined;
+  aliases: string[];
+  tags: string[];
+  headings: string[];
+  frontmatterFields: Array<{ key: string; value: string }>;
+  bodyText: string;
 }
 
 function countLines(value: string): number {
@@ -42,6 +55,150 @@ function normalizeInlineMarkdown(value: string): string {
     .replace(/\[\[([^\]]+)\]\]/g, "$1")
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
     .replace(/[*_`~]+/g, "");
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const results: string[] = [];
+
+  for (const value of values.map((entry) => collapseWhitespace(String(entry))).filter(Boolean)) {
+    const key = value.toLowerCase();
+
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    results.push(value);
+  }
+
+  return results;
+}
+
+function normalizeScalarList(value: unknown): string[] {
+  if (value === undefined || value === null) {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => normalizeScalarList(entry));
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+
+    if (!trimmed) {
+      return [];
+    }
+
+    if (trimmed.includes(",")) {
+      return trimmed.split(",").map((entry) => entry.trim()).filter(Boolean);
+    }
+
+    return [trimmed];
+  }
+
+  if (typeof value === "number" || typeof value === "boolean") {
+    return [String(value)];
+  }
+
+  return [];
+}
+
+function normalizeTagList(value: unknown): string[] {
+  return uniqueStrings(
+    normalizeScalarList(value).map((entry) => entry.replace(/^#+/, "").trim()).filter(Boolean)
+  );
+}
+
+function extractInlineTags(fullText: string): string[] {
+  const matches = fullText.match(/(^|[^\w])#([A-Za-z][\w/-]*)/g) ?? [];
+  return uniqueStrings(
+    matches
+      .map((entry) => /#([A-Za-z][\w/-]*)/.exec(entry)?.[1] ?? "")
+      .map((entry) => entry.replace(/^#+/, "").trim())
+      .filter(Boolean)
+  );
+}
+
+function splitFrontmatter(fullText: string): { frontmatter: Record<string, unknown>; contentWithoutFrontmatter: string } {
+  const lines = fullText.split(/\r?\n/);
+
+  if ((lines[0] ?? "").trim() !== "---") {
+    return {
+      frontmatter: {},
+      contentWithoutFrontmatter: fullText
+    };
+  }
+
+  let closingIndex = -1;
+
+  for (let index = 1; index < lines.length; index += 1) {
+    if (/^(---|\.{3})\s*$/.test(lines[index] ?? "")) {
+      closingIndex = index;
+      break;
+    }
+  }
+
+  if (closingIndex < 0) {
+    return {
+      frontmatter: {},
+      contentWithoutFrontmatter: fullText
+    };
+  }
+
+  const rawFrontmatter = lines.slice(1, closingIndex).join("\n");
+  let frontmatter: Record<string, unknown> = {};
+
+  try {
+    const parsed = yaml.load(rawFrontmatter);
+    frontmatter =
+      parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {};
+  } catch {
+    frontmatter = {};
+  }
+
+  return {
+    frontmatter,
+    contentWithoutFrontmatter: lines.slice(closingIndex + 1).join("\n")
+  };
+}
+
+function collectFrontmatterFields(
+  value: unknown,
+  key: string,
+  results: Array<{ key: string; value: string }>
+): void {
+  if (value === undefined || value === null) {
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    const scalarValues = normalizeScalarList(value);
+
+    if (scalarValues.length > 0) {
+      for (const scalarValue of scalarValues) {
+        results.push({ key, value: scalarValue });
+      }
+      return;
+    }
+
+    for (const entry of value) {
+      collectFrontmatterFields(entry, key, results);
+    }
+    return;
+  }
+
+  if (typeof value === "object") {
+    for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+      collectFrontmatterFields(childValue, `${key}.${childKey}`, results);
+    }
+    return;
+  }
+
+  results.push({ key, value: String(value) });
 }
 
 function extractHeadings(fullText: string, maxHeadings: number): string[] {
@@ -109,8 +266,9 @@ function extractTextBlocks(fullText: string): string[] {
 }
 
 export function buildNoteExcerpt(fullText: string, options: NoteExcerptOptions): NoteExcerpt {
-  const headings = extractHeadings(fullText, options.maxHeadings);
-  const blocks = extractTextBlocks(fullText);
+  const metadata = extractNoteRetrievalMetadata(fullText);
+  const headings = metadata.headings.slice(0, options.maxHeadings);
+  const blocks = extractTextBlocks(metadata.contentWithoutFrontmatter);
   const excerptSource = blocks.slice(0, 3).join(" ");
   const summarySource = blocks.slice(0, 2).join(" ");
   const fallback = headings.slice(0, 3).join(" | ");
@@ -119,6 +277,44 @@ export function buildNoteExcerpt(fullText: string, options: NoteExcerptOptions):
     summary: truncateAtWord(summarySource || fallback || "No summary available.", options.maxSummaryChars),
     excerpt: truncateAtWord(excerptSource || summarySource || fallback || "No excerpt available.", options.maxExcerptChars),
     headings
+  };
+}
+
+export function extractNoteRetrievalMetadata(fullText: string): NoteRetrievalMetadata {
+  const { frontmatter, contentWithoutFrontmatter } = splitFrontmatter(fullText);
+  const headings = extractHeadings(contentWithoutFrontmatter, Number.MAX_SAFE_INTEGER);
+  const aliases = uniqueStrings(
+    normalizeScalarList(frontmatter.aliases ?? frontmatter.alias)
+  );
+  const tags = uniqueStrings([
+    ...normalizeTagList(frontmatter.tags ?? frontmatter.tag),
+    ...extractInlineTags(contentWithoutFrontmatter)
+  ]);
+  const title = normalizeScalarList(frontmatter.title)[0];
+  const frontmatterFields: Array<{ key: string; value: string }> = [];
+
+  for (const [key, value] of Object.entries(frontmatter)) {
+    if (["title", "alias", "aliases", "tag", "tags"].includes(key)) {
+      continue;
+    }
+
+    collectFrontmatterFields(value, key, frontmatterFields);
+  }
+
+  return {
+    frontmatter,
+    contentWithoutFrontmatter,
+    title,
+    aliases,
+    tags,
+    headings,
+    frontmatterFields: uniqueStrings(
+      frontmatterFields.map((entry) => `${entry.key}\u0000${entry.value}`)
+    ).map((entry) => {
+      const [key, value] = entry.split("\u0000");
+      return { key: key ?? "", value: value ?? "" };
+    }),
+    bodyText: extractTextBlocks(contentWithoutFrontmatter).join("\n\n")
   };
 }
 

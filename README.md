@@ -323,6 +323,9 @@ Retour:
 - format OpenAI-compatible: `results[]` avec `id`, `title`, `url`, `text`
 - `id` est maintenant un identifiant stable opaque, distinct du chemin
 - chaque résultat expose aussi `path` et `excerpt` explicitement
+- le ranking pondère le `title`, les `aliases`, les `tags`, les `headings`, le `frontmatter`, le `path` et le corps de note
+- le snippet peut donc refléter un match de type `Title:`, `Alias:`, `Tag:`, `Heading:` ou `Frontmatter:`
+- la recherche combine match lexical exact et matching souple local sur les variantes de termes
 - utilise toujours la target par défaut du serveur
 
 ### `fetch`
@@ -341,6 +344,7 @@ Retour:
 - format OpenAI-compatible: `id`, `title`, `text`, `url`, `metadata`
 - `id` reste stable entre `search` et `fetch`
 - le document expose aussi `path` et `content` explicitement
+- `metadata` expose aussi `aliases`, `tags`, `headings` et le `frontmatter` parsé
 - accepte aussi une GitHub blob URL générée par `search`
 - accepte aussi un ancien chemin brut pour compatibilité
 - utilise toujours la target par défaut du serveur
@@ -499,7 +503,8 @@ Entrée:
 
 ## Notes de conception
 
-- `search_notes` fait un scan markdown simple et portable, sans index dédié
+- `search_notes` et `search` font un scan markdown structuré, sans index externe, en exploitant `frontmatter`, `aliases`, `tags` et `headings`
+- la recherche est hybride au sens “lexical + matching souple local”, mais n’embarque pas encore d’index vectoriel ni d’embeddings
 - `search` et `fetch` fournissent une couche de compatibilité OpenAI pour les workflows documentaires
 - `read_note_excerpt` produit un résumé déterministe côté serveur, sans dépendre d’un LLM externe
 - `read_section` et `replace_section` supportent les headings ATX (`#`, `##`, `###`, etc.)

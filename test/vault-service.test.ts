@@ -34,6 +34,32 @@ async function createVaultFixture() {
     "# Memory\n\nReference material.\n",
     "utf8"
   );
+  await fs.writeFile(
+    path.join(root, "03-Knowledge/Concepts/fellowship-memory.md"),
+    [
+      "---",
+      "title: Fellowship Memory",
+      "aliases:",
+      "  - Shared Chronicle",
+      "tags:",
+      "  - memory",
+      "  - campaign/lore",
+      "actors:",
+      "  - Bilbo",
+      "status: active",
+      "---",
+      "",
+      "# Memory Archive",
+      "",
+      "## Session Memory",
+      "This note tracks fellowship chronicles and recall rituals.",
+      "",
+      "## Recall Signals",
+      "Use this when the table needs a quick memory refresh.",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
   await fs.writeFile(path.join(root, "Secrets/token.md"), "super-secret\n", "utf8");
 
   return root;
@@ -82,6 +108,16 @@ test("read_note returns stable document metadata alongside content", async () =>
   );
   assert.match(output.content, /^# Community/m);
   assert.ok(output.sha256.length > 0);
+});
+
+test("read_note prefers the frontmatter title when present", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const output = await service.readNote("03-Knowledge/Concepts/fellowship-memory.md");
+
+  assert.equal(output.title, "Fellowship Memory");
+  assert.match(output.content, /^---/m);
 });
 
 test("read_section returns only the requested section content", async () => {
@@ -137,6 +173,22 @@ test("read_note_excerpt returns a compact summary, excerpt, and headings", async
   assert.deepEqual(output.headings, ["# Community", "## Chronicle tab", "### Timeline", "## Social tab"]);
   assert.ok(output.summary.length <= 80);
   assert.ok(output.excerpt.length <= 120);
+});
+
+test("read_note_excerpt ignores frontmatter when building summary and excerpt", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const output = await service.readNoteExcerpt("03-Knowledge/Concepts/fellowship-memory.md", {
+    maxExcerptChars: 120,
+    maxSummaryChars: 80,
+    maxHeadings: 4
+  });
+
+  assert.equal(output.title, "Fellowship Memory");
+  assert.match(output.summary, /fellowship chronicles/i);
+  assert.doesNotMatch(output.summary, /Shared Chronicle/);
+  assert.deepEqual(output.headings, ["# Memory Archive", "## Session Memory", "## Recall Signals"]);
 });
 
 test("read_note_excerpt refuses blacklisted paths", async () => {
@@ -244,6 +296,38 @@ test("searchNotes returns id, title, path, and url in addition to snippet and sc
   assert.equal(typeof output.results[0]?.score, "number");
 });
 
+test("searchNotes ranks aliases, headings, tags, and frontmatter fields", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const aliasResult = await service.searchNotes("Shared Chronicle", undefined, 5);
+  assert.equal(aliasResult.results[0]?.path, "03-Knowledge/Concepts/fellowship-memory.md");
+  assert.equal(aliasResult.results[0]?.title, "Fellowship Memory");
+  assert.equal(aliasResult.results[0]?.snippet, "Alias: Shared Chronicle");
+
+  const headingResult = await service.searchNotes("Session Memory", undefined, 5);
+  assert.equal(headingResult.results[0]?.path, "03-Knowledge/Concepts/fellowship-memory.md");
+  assert.equal(headingResult.results[0]?.snippet, "Heading: ## Session Memory");
+
+  const tagResult = await service.searchNotes("campaign/lore", undefined, 5);
+  assert.equal(tagResult.results[0]?.path, "03-Knowledge/Concepts/fellowship-memory.md");
+  assert.equal(tagResult.results[0]?.snippet, "Tag: #campaign/lore");
+
+  const frontmatterResult = await service.searchNotes("Bilbo", undefined, 5);
+  assert.equal(frontmatterResult.results[0]?.path, "03-Knowledge/Concepts/fellowship-memory.md");
+  assert.equal(frontmatterResult.results[0]?.snippet, "Frontmatter: actors: Bilbo");
+});
+
+test("searchNotes supports lightweight hybrid matching on inflected terms", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const output = await service.searchNotes("shared chronicles", undefined, 5);
+
+  assert.equal(output.results[0]?.path, "03-Knowledge/Concepts/fellowship-memory.md");
+  assert.equal(output.results[0]?.title, "Fellowship Memory");
+});
+
 test("fetchOpenAI returns full note contents and metadata", async () => {
   const vaultRepoRoot = await createVaultFixture();
   const service = await VaultService.create(makeConfig(vaultRepoRoot));
@@ -261,7 +345,27 @@ test("fetchOpenAI returns full note contents and metadata", async () => {
   );
   assert.equal(output.metadata.target, "test");
   assert.equal(output.metadata.path, "02-Work/TOR2e/specs/community.md");
-  assert.ok((output.metadata.sha256 ?? "").length > 0);
+  assert.equal(typeof output.metadata.sha256, "string");
+  assert.ok((output.metadata.sha256 as string).length > 0);
+});
+
+test("fetchOpenAI returns structured retrieval metadata for the note", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const output = await service.fetchOpenAI("03-Knowledge/Concepts/fellowship-memory.md");
+
+  assert.equal(output.title, "Fellowship Memory");
+  assert.deepEqual(output.metadata.aliases, ["Shared Chronicle"]);
+  assert.deepEqual(output.metadata.tags, ["memory", "campaign/lore"]);
+  assert.deepEqual(output.metadata.headings, ["# Memory Archive", "## Session Memory", "## Recall Signals"]);
+  assert.deepEqual(output.metadata.frontmatter, {
+    title: "Fellowship Memory",
+    aliases: ["Shared Chronicle"],
+    tags: ["memory", "campaign/lore"],
+    actors: ["Bilbo"],
+    status: "active"
+  });
 });
 
 test("fetchOpenAI accepts a GitHub blob URL returned by search", async () => {

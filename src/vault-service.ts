@@ -9,7 +9,14 @@ import { RefusalError } from "./errors.js";
 import { GitHubClient } from "./github.js";
 import { sha256 } from "./lib/hash.js";
 import { normalizeVaultPath, resolveVaultPath, toVaultRelativePath } from "./lib/paths.js";
-import { applyChange, buildNoteExcerpt, buildDiffSummary, extractSection } from "./markdown.js";
+import {
+  applyChange,
+  buildNoteExcerpt,
+  buildDiffSummary,
+  extractNoteRetrievalMetadata,
+  extractSection,
+  type NoteRetrievalMetadata
+} from "./markdown.js";
 import { VaultPolicyEngine } from "./policy.js";
 import type {
   OpenAIFetchResult,
@@ -48,23 +55,38 @@ interface DocumentDescriptor {
 
 type BasicSearchResult = Pick<SearchResult, "path" | "snippet" | "score">;
 
-function scoreContent(query: string, content: string): number {
-  const lowerQuery = query.toLowerCase();
-  const lowerContent = content.toLowerCase();
-  let position = 0;
-  let matches = 0;
-
-  while (position >= 0) {
-    position = lowerContent.indexOf(lowerQuery, position);
-
-    if (position >= 0) {
-      matches += 1;
-      position += lowerQuery.length;
-    }
-  }
-
-  return matches;
+interface SearchQueryContext {
+  raw: string;
+  normalized: string;
+  tokens: string[];
 }
+
+interface SearchFieldWeights {
+  exact: number;
+  token: number;
+  fullCoverageBonus: number;
+  fuzzy: number;
+  fuzzyThreshold: number;
+}
+
+interface SearchFieldMatch {
+  kind: "title" | "alias" | "tag" | "heading" | "frontmatter" | "path" | "body";
+  value: string;
+  score: number;
+  exactMatches: number;
+  tokenMatches: number;
+  fuzzy: number;
+}
+
+const SEARCH_FIELD_WEIGHTS: Record<SearchFieldMatch["kind"], SearchFieldWeights> = {
+  title: { exact: 18, token: 10, fullCoverageBonus: 5, fuzzy: 6, fuzzyThreshold: 0.45 },
+  alias: { exact: 16, token: 9, fullCoverageBonus: 4, fuzzy: 5, fuzzyThreshold: 0.45 },
+  tag: { exact: 14, token: 8, fullCoverageBonus: 4, fuzzy: 4, fuzzyThreshold: 0.4 },
+  heading: { exact: 12, token: 7, fullCoverageBonus: 3, fuzzy: 4, fuzzyThreshold: 0.45 },
+  frontmatter: { exact: 8, token: 5, fullCoverageBonus: 2, fuzzy: 3, fuzzyThreshold: 0.55 },
+  path: { exact: 7, token: 4, fullCoverageBonus: 1, fuzzy: 2, fuzzyThreshold: 0.55 },
+  body: { exact: 6, token: 3, fullCoverageBonus: 0, fuzzy: 2, fuzzyThreshold: 0.72 }
+};
 
 function buildSnippet(content: string, query: string, maxLength = 220): string {
   const lowerContent = content.toLowerCase();
@@ -174,16 +196,203 @@ function scorePath(query: string, filePath: string): number {
 }
 
 function extractNoteTitle(content: string, relativePath: string): string {
-  const heading = content
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => /^#\s+/.test(line));
+  const metadata = extractNoteRetrievalMetadata(content);
+
+  if (metadata.title) {
+    return metadata.title;
+  }
+
+  const heading = metadata.headings.find((line) => /^#\s+/.test(line)) ?? metadata.headings[0];
 
   if (heading) {
-    return heading.replace(/^#\s+/, "").trim();
+    return heading.replace(/^#+\s+/, "").trim();
   }
 
   return path.basename(relativePath, path.extname(relativePath)).replace(/[-_]+/g, " ");
+}
+
+function normalizeSearchText(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}#/_-]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function canonicalizeSearchToken(value: string): string {
+  if (value.length <= 3) {
+    return value;
+  }
+
+  if (value.endsWith("ies") && value.length > 4) {
+    return `${value.slice(0, -3)}y`;
+  }
+
+  if (/(ches|shes|xes|zes|ses|oes)$/.test(value) && value.length > 4) {
+    return value.slice(0, -2);
+  }
+
+  if (value.endsWith("s") && !value.endsWith("ss") && value.length > 3) {
+    return value.slice(0, -1);
+  }
+
+  if (value.endsWith("ing") && value.length > 5) {
+    return value.slice(0, -3);
+  }
+
+  if (value.endsWith("ed") && value.length > 4) {
+    return value.slice(0, -2);
+  }
+
+  return value;
+}
+
+function tokenizeSearchText(value: string): string[] {
+  const unique = new Set<string>();
+
+  for (const token of normalizeSearchText(value)
+    .split(" ")
+    .map((entry) => canonicalizeSearchToken(entry.replace(/^#+/, "").trim()))
+    .filter(Boolean)) {
+    if (token.length >= 2 || /^\d+$/.test(token)) {
+      unique.add(token);
+    }
+  }
+
+  return Array.from(unique);
+}
+
+function countExactMatches(query: string, content: string): number {
+  if (!query || !content) {
+    return 0;
+  }
+
+  let position = 0;
+  let matches = 0;
+
+  while (position >= 0) {
+    position = content.indexOf(query, position);
+
+    if (position >= 0) {
+      matches += 1;
+      position += query.length;
+    }
+  }
+
+  return matches;
+}
+
+function buildCharacterTrigrams(value: string): Set<string> {
+  const compact = value.replace(/\s+/g, "");
+
+  if (!compact) {
+    return new Set<string>();
+  }
+
+  if (compact.length <= 3) {
+    return new Set([compact]);
+  }
+
+  const trigrams = new Set<string>();
+
+  for (let index = 0; index <= compact.length - 3; index += 1) {
+    trigrams.add(compact.slice(index, index + 3));
+  }
+
+  return trigrams;
+}
+
+function diceCoefficient(left: string, right: string): number {
+  if (!left || !right) {
+    return 0;
+  }
+
+  if (left === right) {
+    return 1;
+  }
+
+  const leftTrigrams = buildCharacterTrigrams(left);
+  const rightTrigrams = buildCharacterTrigrams(right);
+
+  if (leftTrigrams.size === 0 || rightTrigrams.size === 0) {
+    return 0;
+  }
+
+  let overlap = 0;
+
+  for (const trigram of leftTrigrams) {
+    if (rightTrigrams.has(trigram)) {
+      overlap += 1;
+    }
+  }
+
+  return (2 * overlap) / (leftTrigrams.size + rightTrigrams.size);
+}
+
+function evaluateSearchField(
+  query: SearchQueryContext,
+  kind: SearchFieldMatch["kind"],
+  value: string
+): SearchFieldMatch | null {
+  const normalizedValue = normalizeSearchText(value);
+
+  if (!normalizedValue) {
+    return null;
+  }
+
+  const weights = SEARCH_FIELD_WEIGHTS[kind];
+  const exactMatches = countExactMatches(query.normalized, normalizedValue);
+  const fieldTokens = new Set(tokenizeSearchText(normalizedValue));
+  const tokenMatches = query.tokens.filter((token) => fieldTokens.has(token)).length;
+  const fuzzy = diceCoefficient(query.normalized, normalizedValue);
+
+  if (exactMatches === 0 && tokenMatches === 0 && fuzzy < weights.fuzzyThreshold) {
+    return null;
+  }
+
+  let score = exactMatches * weights.exact;
+
+  if (query.tokens.length > 0 && tokenMatches > 0) {
+    score += (tokenMatches / query.tokens.length) * weights.token;
+
+    if (tokenMatches === query.tokens.length && query.tokens.length > 1) {
+      score += weights.fullCoverageBonus;
+    }
+  }
+
+  if (fuzzy >= weights.fuzzyThreshold) {
+    score += fuzzy * weights.fuzzy;
+  }
+
+  return {
+    kind,
+    value,
+    score,
+    exactMatches,
+    tokenMatches,
+    fuzzy
+  };
+}
+
+function buildStructuredSnippet(query: SearchQueryContext, match: SearchFieldMatch): string {
+  if (match.kind === "body") {
+    return buildSnippet(match.value, query.raw, 220);
+  }
+
+  const labelByKind: Record<Exclude<SearchFieldMatch["kind"], "body">, string> = {
+    title: "Title",
+    alias: "Alias",
+    tag: "Tag",
+    heading: "Heading",
+    frontmatter: "Frontmatter",
+    path: "Path"
+  };
+  const displayValue = match.kind === "tag" ? `#${match.value.replace(/^#+/, "")}` : match.value;
+  const labeled = `${labelByKind[match.kind]}: ${displayValue}`;
+
+  return labeled.length <= 220 ? labeled : `${labeled.slice(0, 219).trimEnd()}…`;
 }
 
 function buildGitHubRepoWebBase(apiBaseUrl: string): string {
@@ -363,25 +572,22 @@ export class VaultService {
       requestedRoots.map((root) => root.absolutePath),
       trimmedQuery
     );
-
-    if (ripgrepResults) {
-      return {
-        results: await Promise.all(ripgrepResults.slice(0, limit).map((result) => this.enrichSearchResult(result)))
-      };
-    }
-
+    const lexicalScores = new Map<string, number>(
+      (ripgrepResults ?? []).map((result) => [result.path, result.score])
+    );
     const results: BasicSearchResult[] = [];
+    const queryContext: SearchQueryContext = {
+      raw: trimmedQuery,
+      normalized: normalizeSearchText(trimmedQuery),
+      tokens: tokenizeSearchText(trimmedQuery)
+    };
 
     for (const root of requestedRoots) {
       if (root.stats.isFile()) {
         const relativePath = toVaultRelativePath(this.config.vaultRepoRoot, root.absolutePath);
-        await this.searchFile(relativePath, trimmedQuery, results);
+        await this.searchFile(relativePath, queryContext, results, lexicalScores.get(relativePath) ?? 0);
       } else {
-        await this.searchDirectory(root.absolutePath, trimmedQuery, results, limit);
-      }
-
-      if (results.length >= limit) {
-        break;
+        await this.searchDirectory(root.absolutePath, queryContext, lexicalScores, results);
       }
     }
 
@@ -414,19 +620,24 @@ export class VaultService {
   async fetchOpenAI(identifier: string): Promise<OpenAIFetchResult> {
     const safePath = this.resolveOpenAIIdentifier(identifier);
     const note = await this.readNote(safePath);
+    const retrieval = extractNoteRetrievalMetadata(note.content);
 
     return {
-      id: encodeStableDocumentId(this.config.name, note.path),
-      title: extractNoteTitle(note.content, note.path),
+      id: note.id,
+      title: note.title,
       path: note.path,
       content: note.content,
       text: note.content,
-      url: this.buildDocumentUrl(note.path),
+      url: note.url,
       metadata: {
         target: this.config.name,
         path: note.path,
         sha256: note.sha256,
-        source: "obsidian-vault"
+        source: "obsidian-vault",
+        aliases: retrieval.aliases,
+        tags: retrieval.tags,
+        headings: retrieval.headings,
+        frontmatter: retrieval.frontmatter
       }
     };
   }
@@ -677,6 +888,75 @@ export class VaultService {
     return fromUrl ?? normalizeVaultPath(trimmed);
   }
 
+  private rankSearchResult(
+    query: SearchQueryContext,
+    descriptor: DocumentDescriptor,
+    metadata: NoteRetrievalMetadata,
+    lexicalBoost: number
+  ): BasicSearchResult | null {
+    const matches: SearchFieldMatch[] = [];
+    const pushMatch = (match: SearchFieldMatch | null) => {
+      if (match && match.score > 0) {
+        matches.push(match);
+      }
+    };
+
+    pushMatch(evaluateSearchField(query, "title", descriptor.title));
+    pushMatch(evaluateSearchField(query, "path", descriptor.path));
+    pushMatch(evaluateSearchField(query, "body", metadata.bodyText));
+
+    for (const alias of metadata.aliases) {
+      pushMatch(evaluateSearchField(query, "alias", alias));
+    }
+
+    for (const tag of metadata.tags) {
+      pushMatch(evaluateSearchField(query, "tag", tag));
+    }
+
+    for (const heading of metadata.headings) {
+      pushMatch(evaluateSearchField(query, "heading", heading));
+    }
+
+    for (const field of metadata.frontmatterFields) {
+      pushMatch(evaluateSearchField(query, "frontmatter", `${field.key}: ${field.value}`));
+    }
+
+    if (matches.length === 0 && lexicalBoost <= 0) {
+      return null;
+    }
+
+    const combinedTokenMatches = new Set<string>();
+    for (const token of query.tokens) {
+      if (matches.some((match) => tokenizeSearchText(match.value).includes(token))) {
+        combinedTokenMatches.add(token);
+      }
+    }
+
+    const tokenCoverage = query.tokens.length === 0 ? 1 : combinedTokenMatches.size / query.tokens.length;
+    const bestMatch = matches.sort((left, right) => right.score - left.score)[0] ?? null;
+    const score =
+      matches.reduce((total, match) => total + match.score, 0) +
+      lexicalBoost * 4 +
+      tokenCoverage * 6;
+
+    if (score < 4) {
+      return null;
+    }
+
+    if (lexicalBoost === 0 && tokenCoverage < 0.6 && (bestMatch?.fuzzy ?? 0) < 0.82) {
+      return null;
+    }
+
+    return {
+      path: descriptor.path,
+      snippet:
+        bestMatch
+          ? buildStructuredSnippet(query, bestMatch)
+          : buildSnippet(metadata.bodyText || metadata.contentWithoutFrontmatter, query.raw, 220),
+      score
+    };
+  }
+
   private async enrichSearchResult(result: BasicSearchResult): Promise<SearchResult> {
     const descriptor = await this.describeDocument(result.path);
 
@@ -689,17 +969,13 @@ export class VaultService {
 
   private async searchDirectory(
     absoluteRoot: string,
-    query: string,
-    results: BasicSearchResult[],
-    limit: number
+    query: SearchQueryContext,
+    lexicalScores: Map<string, number>,
+    results: BasicSearchResult[]
   ): Promise<void> {
     const entries = await fs.readdir(absoluteRoot, { withFileTypes: true });
 
     for (const entry of entries) {
-      if (results.length >= limit) {
-        return;
-      }
-
       if (IGNORED_DIRECTORIES.has(entry.name)) {
         continue;
       }
@@ -707,7 +983,7 @@ export class VaultService {
       const absolutePath = path.join(absoluteRoot, entry.name);
 
       if (entry.isDirectory()) {
-        await this.searchDirectory(absolutePath, query, results, limit);
+        await this.searchDirectory(absolutePath, query, lexicalScores, results);
         continue;
       }
 
@@ -716,7 +992,7 @@ export class VaultService {
       }
 
       const relativePath = toVaultRelativePath(this.config.vaultRepoRoot, absolutePath);
-      await this.searchFile(relativePath, query, results);
+      await this.searchFile(relativePath, query, results, lexicalScores.get(relativePath) ?? 0);
     }
   }
 
@@ -758,7 +1034,12 @@ export class VaultService {
     }
   }
 
-  private async searchFile(relativePath: string, query: string, results: BasicSearchResult[]): Promise<void> {
+  private async searchFile(
+    relativePath: string,
+    query: SearchQueryContext,
+    results: BasicSearchResult[],
+    lexicalBoost: number
+  ): Promise<void> {
     const access = this.policy.accessForPath(relativePath);
 
     if (!access.read) {
@@ -767,17 +1048,15 @@ export class VaultService {
 
     const absolutePath = resolveVaultPath(this.config.vaultRepoRoot, relativePath);
     const content = await fs.readFile(absolutePath, "utf8");
-    const score = scoreContent(query, content);
+    const metadata = extractNoteRetrievalMetadata(content);
+    const descriptor = this.buildDocumentDescriptor(relativePath, content);
+    const result = this.rankSearchResult(query, descriptor, metadata, lexicalBoost);
 
-    if (score === 0) {
+    if (!result) {
       return;
     }
 
-    results.push({
-      path: relativePath,
-      snippet: buildSnippet(content, query),
-      score: score + scorePath(query, relativePath)
-    });
+    results.push(result);
   }
 
   private async resolveSearchRoots(roots: string[] | undefined) {
