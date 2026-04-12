@@ -1,0 +1,33 @@
+version: 1
+defaults:
+  read: false
+  write: false
+  proposePatch: false
+  openPrOrMr: deny
+rules:
+  - name: hard-deny-private
+    effect: deny
+    paths:
+      - Private/**
+      - Secrets/**
+      - 99-System/policy/**
+      - 99-System/prompts/**
+      - 99-System/schemas/**
+
+  - name: tor2e-write-via-pr
+    effect: write_via_pr
+    paths:
+      - 02-Work/TOR2e/working/**
+      - 02-Work/TOR2e/scratch/**
+      - 02-Work/TOR2e/specs/**
+      - 02-Work/Drafts/**
+
+  - name: knowledge-propose-only
+    effect: propose_only
+    paths:
+      - 02-Work/TOR2e/reference/**
+      - 03-Knowledge/Concepts/**
+      - 03-Knowledge/Methods/**
+      - 03-Knowledge/Technical/**
+      - 04-Archive/**
+      - 90-Templates/**
