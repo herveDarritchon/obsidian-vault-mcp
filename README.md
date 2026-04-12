@@ -56,15 +56,90 @@ Prépare d’abord un fichier `.env.e2e` à partir de [.env.e2e.example](/Users/
 npm run test:e2e:real
 ```
 
-Le script :
+Le script vérifie maintenant 5 choses avant même le flux PR:
 
 - démarre le serveur MCP localement sur un port éphémère ;
 - appelle les tools via un client MCP HTTP ;
-- exécute `read_note`, `search_notes`, `update_note_draft`, puis `propose_change` ;
+- valide `read_note`, `search_notes` et `update_note_draft` sur une vraie note ;
+- vérifie qu’une lecture sur une zone blacklistée est bien refusée ;
+- vérifie qu’un `expected_sha256` périmé est bien rejeté ;
+- exécute ensuite `propose_change` si `E2E_SKIP_PROPOSE_CHANGE=false` ;
 - vérifie que la PR GitHub a bien été créée ;
 - peut fermer la PR et supprimer la branche si `E2E_CLEANUP=true`.
 
-Pour un premier passage sûr, cible un fichier sandbox existant comme `02-Work/TOR2e/working/test-note.md`.
+### Repo sandbox recommandé
+
+Pour éviter de polluer ton vrai vault, prépare un repo sandbox dédié :
+
+- un repo GitHub séparé, par exemple `obsidian-mcp-e2e-vault`
+- un clone local de ce repo, utilisé comme vault Obsidian
+- une note sandbox déjà commitée sur `main`
+- une policy E2E qui autorise seulement ce sous-arbre en `write_via_pr`
+
+Le point important est que `E2E_NOTE_PATH` doit déjà exister dans l’historique de `E2E_BASE_BRANCH`. Si le fichier est seulement présent en local mais pas tracké sur `main`, le full E2E refusera `propose_change`.
+
+### Token GitHub
+
+Le full E2E a besoin d’un `GITHUB_TOKEN` uniquement quand `E2E_SKIP_PROPOSE_CHANGE=false`.
+
+Setup recommandé :
+
+- utilise un token dédié au repo sandbox, pas à ton vrai vault ;
+- si tu prends un fine-grained PAT, restreins-le explicitement au repo sandbox ;
+- donne-lui au minimum la permission repository `Pull requests: Read and write`, car c’est ce qui débloque la création de PR ;
+- si tu veux activer `E2E_CLEANUP=true`, vérifie aussi que ce token peut fermer la PR et supprimer la branche de test.
+
+Le symptôme classique d’un token insuffisant est :
+
+```text
+GitHub pull request creation failed: 403 {"message":"Resource not accessible by personal access token", ...}
+```
+
+Dans ce cas, commence par élargir les permissions du token sur le repo sandbox avant de toucher au code.
+
+### Exemple de `.env.e2e`
+
+Les variables clés sont :
+
+- `VAULT_REPO_ROOT` : clone local du repo sandbox
+- `VAULT_POLICY_FILE` : policy YAML utilisée pour l’E2E
+- `E2E_NOTE_PATH` : note réelle lue, draftée puis modifiée via PR
+- `E2E_BLACKLISTED_PATH` : chemin volontairement interdit, utilisé pour vérifier le refus policy
+- `E2E_SKIP_PROPOSE_CHANGE=true` : mode pré-PR, utile pour un premier passage sans GitHub
+- `E2E_SKIP_PROPOSE_CHANGE=false` : mode complet, avec branche, push et PR
+- `E2E_CLEANUP=true` : ferme la PR de test et supprime la branche après validation
+
+Exemple minimal :
+
+```dotenv
+VAULT_REPO_ROOT=/absolute/path/to/obsidian-mcp-e2e-vault
+VAULT_POLICY_FILE=./config/vault-access-policy.e2e.yaml
+
+GITHUB_OWNER=your-user-or-org
+GITHUB_REPO=obsidian-mcp-e2e-vault
+GITHUB_TOKEN=github_pat_xxx
+
+E2E_NOTE_PATH=Obsician MCP E2E Vault/Bienvenue.md
+E2E_SEARCH_ROOT=Obsician MCP E2E Vault
+E2E_SEARCH_QUERY=coffre
+E2E_BLACKLISTED_PATH=Private/e2e-secret.md
+E2E_SKIP_PROPOSE_CHANGE=false
+E2E_CLEANUP=false
+```
+
+### Lecture du résultat
+
+Le rapport console sépare maintenant :
+
+- les étapes positives attendues ;
+- les protections attendues, affichées en vert quand le refus ou le mismatch se produisent correctement ;
+- le résumé final avec mode, note, branche et URL de PR si le run va jusqu’au bout.
+
+En pratique :
+
+- `✅ Refuse blacklisted read` veut dire que la policy bloque bien une zone interdite ;
+- `✅ Reject stale hash` veut dire que le garde-fou de fraîcheur empêche un write à partir d’un état périmé ;
+- `✅ E2E passed` veut dire que les protections et le flux nominal ont tous les deux été validés.
 
 ## Format de policy
 

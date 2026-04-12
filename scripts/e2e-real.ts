@@ -25,6 +25,7 @@ const e2eConfigSchema = z.object({
   E2E_NOTE_PATH: z.string().min(1),
   E2E_SEARCH_ROOT: z.string().min(1).optional().default("02-Work/TOR2e/working"),
   E2E_SEARCH_QUERY: z.string().min(1).optional().default("test note"),
+  E2E_BLACKLISTED_PATH: z.string().min(1).optional().default("Private/e2e-secret.md"),
   E2E_BASE_BRANCH: z.string().min(1).optional().default("main"),
   E2E_BRANCH_SCOPE: z.string().min(1).optional().default("e2e"),
   E2E_BRANCH_SLUG: z.string().min(1).optional().default("obsidian-vault-mcp"),
@@ -156,6 +157,49 @@ async function runStep<T>(
 
     throw error;
   }
+}
+
+async function runExpectedFailureStep(
+  name: string,
+  action: () => Promise<unknown>,
+  matches: (message: string) => boolean,
+  onExpectedFailure: (message: string) => string
+): Promise<void> {
+  const startedAt = Date.now();
+  printLine(`\n${color("🔹", "blue")} ${name} ${color("…", "dim")}`);
+
+  try {
+    await action();
+  } catch (error) {
+    const durationMs = Date.now() - startedAt;
+    const message = error instanceof Error ? error.message : String(error);
+
+    if (!matches(message)) {
+      const summary = summarizeError(error);
+      steps.push({ name, status: "failed", durationMs, detail: summary.title });
+      printLine(`${color("❌", "red")} ${name} ${color(`(${durationMs} ms)`, "dim")}`);
+      printLine(`   ${summary.title}`);
+
+      if (summary.hint) {
+        printLine(`   ${color("💡", "yellow")} ${summary.hint}`);
+      }
+
+      throw error;
+    }
+
+    const detail = onExpectedFailure(message);
+    steps.push({ name, status: "passed", durationMs, detail });
+    printLine(`${color("✅", "green")} ${name} ${color(`(${durationMs} ms)`, "dim")}`);
+    printLine(`   ${detail}`);
+    return;
+  }
+
+  const durationMs = Date.now() - startedAt;
+  const detail = "The tool unexpectedly succeeded.";
+  steps.push({ name, status: "failed", durationMs, detail });
+  printLine(`${color("❌", "red")} ${name} ${color(`(${durationMs} ms)`, "dim")}`);
+  printLine(`   ${detail}`);
+  throw new Error(`${name} unexpectedly succeeded.`);
 }
 
 function printSummary(context: {
@@ -316,6 +360,7 @@ async function main() {
   printInfo("Mode", mode);
   printInfo("Note", e2eConfig.E2E_NOTE_PATH);
   printInfo("Search root", e2eConfig.E2E_SEARCH_ROOT);
+  printInfo("Blacklist", e2eConfig.E2E_BLACKLISTED_PATH);
   printInfo("Branch", branchName);
 
   if (!e2eConfig.E2E_SKIP_PROPOSE_CHANGE) {
@@ -434,6 +479,32 @@ async function main() {
     assert.equal(draftResult.current_sha256, readResult.sha256);
     assert.ok(draftResult.draft_content.includes(marker.trim()));
     assert.ok(draftResult.diff_summary.line_delta >= 1);
+
+    await runExpectedFailureStep(
+      "Refuse blacklisted read",
+      () =>
+        callTool(client, "read_note", {
+          path: e2eConfig.E2E_BLACKLISTED_PATH
+        }),
+      (message) => message.includes("Read denied by policy"),
+      () => `Policy correctly denied ${e2eConfig.E2E_BLACKLISTED_PATH}`
+    );
+
+    const staleSha =
+      readResult.sha256.slice(0, -1) + (readResult.sha256.endsWith("0") ? "1" : "0");
+
+    await runExpectedFailureStep(
+      "Reject stale hash",
+      () =>
+        callTool(client, "update_note_draft", {
+          path: e2eConfig.E2E_NOTE_PATH,
+          mode: "append",
+          content: `${marker.trim()}\n<!-- stale-hash-check -->`,
+          expected_sha256: staleSha
+        }),
+      (message) => message.includes("expected_sha256 mismatch"),
+      () => `Server rejected a stale expected_sha256 for ${e2eConfig.E2E_NOTE_PATH}`
+    );
 
     if (e2eConfig.E2E_SKIP_PROPOSE_CHANGE) {
       steps.push({
