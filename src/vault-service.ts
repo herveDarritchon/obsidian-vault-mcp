@@ -195,6 +195,35 @@ function encodePathForUrl(relativePath: string): string {
     .join("/");
 }
 
+function encodeStableDocumentId(targetName: string, relativePath: string): string {
+  const encodedTarget = encodeURIComponent(targetName);
+  const encodedPath = Buffer.from(normalizeVaultPath(relativePath), "utf8").toString("base64url");
+  return `obsidian-vault:v1:${encodedTarget}:${encodedPath}`;
+}
+
+function decodeStableDocumentId(
+  identifier: string,
+  expectedTargetName: string
+): string | null {
+  const match = /^obsidian-vault:v1:([^:]+):([A-Za-z0-9_-]+)$/.exec(identifier.trim());
+
+  if (!match) {
+    return null;
+  }
+
+  const targetName = decodeURIComponent(match[1] ?? "");
+  if (targetName !== expectedTargetName) {
+    return null;
+  }
+
+  try {
+    const relativePath = Buffer.from(match[2] ?? "", "base64url").toString("utf8");
+    return normalizeVaultPath(relativePath);
+  } catch {
+    return null;
+  }
+}
+
 function decodeGitHubBlobPath(
   identifier: string,
   options: {
@@ -350,8 +379,10 @@ export class VaultService {
         const note = await this.readNote(result.path);
 
         return {
-          id: result.path,
+          id: encodeStableDocumentId(this.config.name, result.path),
           title: extractNoteTitle(note.content, result.path),
+          path: result.path,
+          excerpt: result.snippet,
           url: this.buildDocumentUrl(result.path),
           text: result.snippet
         };
@@ -366,8 +397,10 @@ export class VaultService {
     const note = await this.readNote(safePath);
 
     return {
-      id: note.path,
+      id: encodeStableDocumentId(this.config.name, note.path),
       title: extractNoteTitle(note.content, note.path),
+      path: note.path,
+      content: note.content,
       text: note.content,
       url: this.buildDocumentUrl(note.path),
       metadata: {
@@ -575,6 +608,11 @@ export class VaultService {
 
     if (!trimmed) {
       throw new RefusalError("id is required.");
+    }
+
+    const fromStableId = decodeStableDocumentId(trimmed, this.config.name);
+    if (fromStableId) {
+      return fromStableId;
     }
 
     const fromUrl = decodeGitHubBlobPath(trimmed, {

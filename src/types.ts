@@ -55,6 +55,8 @@ export interface SearchNotesResult extends Record<string, unknown> {
 export interface OpenAISearchResult {
   id: string;
   title: string;
+  path: string;
+  excerpt: string;
   url: string;
   text: string;
 }
@@ -66,6 +68,8 @@ export interface OpenAISearchResultSet extends Record<string, unknown> {
 export interface OpenAIFetchResult extends Record<string, unknown> {
   id: string;
   title: string;
+  path: string;
+  content: string;
   text: string;
   url: string;
   metadata: Record<string, string>;

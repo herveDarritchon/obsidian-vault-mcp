@@ -321,6 +321,8 @@ Retour:
 
 - bloc texte JSON unique
 - format OpenAI-compatible: `results[]` avec `id`, `title`, `url`, `text`
+- `id` est maintenant un identifiant stable opaque, distinct du chemin
+- chaque résultat expose aussi `path` et `excerpt` explicitement
 - utilise toujours la target par défaut du serveur
 
 ### `fetch`
@@ -337,7 +339,10 @@ Retour:
 
 - bloc texte JSON unique
 - format OpenAI-compatible: `id`, `title`, `text`, `url`, `metadata`
+- `id` reste stable entre `search` et `fetch`
+- le document expose aussi `path` et `content` explicitement
 - accepte aussi une GitHub blob URL générée par `search`
+- accepte aussi un ancien chemin brut pour compatibilité
 - utilise toujours la target par défaut du serveur
 
 ### `read_note`

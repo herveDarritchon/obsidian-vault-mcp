@@ -165,8 +165,13 @@ test("searchOpenAI returns OpenAI-compatible document results", async () => {
   const output = await service.searchOpenAI("Initial content", 5);
 
   assert.equal(output.results.length, 1);
-  assert.equal(output.results[0]?.id, "02-Work/TOR2e/specs/community.md");
+  assert.match(
+    output.results[0]?.id ?? "",
+    /^obsidian-vault:v1:test:[A-Za-z0-9_-]+$/
+  );
   assert.equal(output.results[0]?.title, "Community");
+  assert.equal(output.results[0]?.path, "02-Work/TOR2e/specs/community.md");
+  assert.match(output.results[0]?.excerpt ?? "", /Initial content/);
   assert.match(output.results[0]?.text ?? "", /Initial content/);
   assert.equal(
     output.results[0]?.url,
@@ -180,8 +185,10 @@ test("fetchOpenAI returns full note contents and metadata", async () => {
 
   const output = await service.fetchOpenAI("02-Work/TOR2e/specs/community.md");
 
-  assert.equal(output.id, "02-Work/TOR2e/specs/community.md");
+  assert.match(output.id, /^obsidian-vault:v1:test:[A-Za-z0-9_-]+$/);
   assert.equal(output.title, "Community");
+  assert.equal(output.path, "02-Work/TOR2e/specs/community.md");
+  assert.match(output.content, /## Chronicle tab/);
   assert.match(output.text, /## Chronicle tab/);
   assert.equal(
     output.url,
@@ -200,8 +207,24 @@ test("fetchOpenAI accepts a GitHub blob URL returned by search", async () => {
     "https://github.com/example/vault/blob/main/02-Work/TOR2e/specs/community.md"
   );
 
-  assert.equal(output.id, "02-Work/TOR2e/specs/community.md");
+  assert.match(output.id, /^obsidian-vault:v1:test:[A-Za-z0-9_-]+$/);
   assert.equal(output.title, "Community");
+  assert.equal(output.path, "02-Work/TOR2e/specs/community.md");
+});
+
+test("fetchOpenAI accepts a stable document id returned by search", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const searchResult = await service.searchOpenAI("Initial content", 5);
+  const stableId = searchResult.results[0]?.id;
+
+  assert.ok(stableId);
+
+  const output = await service.fetchOpenAI(stableId!);
+
+  assert.equal(output.path, "02-Work/TOR2e/specs/community.md");
+  assert.equal(output.id, stableId);
 });
 
 test("propose_change refuses changes spanning multiple scope buckets", async () => {

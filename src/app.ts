@@ -343,7 +343,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           tool: "search",
           result: "success",
           target: targetName,
-          paths: output.results.map((result) => result.id),
+          paths: output.results.map((result) => result.path),
           resultCount: output.results.length
         });
         return withJsonTextOnly(output);
@@ -392,7 +392,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           tool: "fetch",
           result: "success",
           target: targetName,
-          paths: [output.id]
+          paths: [output.path]
         });
         return withJsonTextOnly(output);
       } catch (error) {

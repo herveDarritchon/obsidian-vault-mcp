@@ -513,7 +513,7 @@ async function main() {
       "Search OpenAI documents",
       () =>
         callTool<{
-          results: Array<{ id: string; title: string; url: string; text: string }>;
+          results: Array<{ id: string; title: string; path: string; excerpt: string; url: string; text: string }>;
         }>(client, "search", {
           query: e2eConfig.E2E_SEARCH_QUERY
         }),
@@ -521,14 +521,19 @@ async function main() {
     );
 
     assert.ok(
-      openAiSearchResult.results.some((result) => result.id === e2eConfig.E2E_NOTE_PATH),
+      openAiSearchResult.results.some((result) => result.path === e2eConfig.E2E_NOTE_PATH),
       `Expected search to return ${e2eConfig.E2E_NOTE_PATH}`
     );
+    assert.ok(
+      openAiSearchResult.results.every((result) => /^obsidian-vault:v1:[^:]+:[A-Za-z0-9_-]+$/.test(result.id)),
+      "Expected search to return stable document ids."
+    );
 
-    const fetchTarget = openAiSearchResult.results.find((result) => result.id === e2eConfig.E2E_NOTE_PATH)
+    const fetchTarget = openAiSearchResult.results.find((result) => result.path === e2eConfig.E2E_NOTE_PATH)
       ?? openAiSearchResult.results[0];
 
     assert.ok(fetchTarget, "Expected at least one search result for fetch.");
+    assert.ok(fetchTarget.excerpt.length > 0);
 
     const fetchResult = await runStep(
       "Fetch OpenAI document",
@@ -536,6 +541,8 @@ async function main() {
         callTool<{
           id: string;
           title: string;
+          path: string;
+          content: string;
           text: string;
           url: string;
           metadata: Record<string, string>;
@@ -546,8 +553,10 @@ async function main() {
     );
 
     assert.equal(fetchResult.id, fetchTarget.id);
+    assert.equal(fetchResult.path, fetchTarget.path);
+    assert.ok(fetchResult.content.length > 0);
     assert.ok(fetchResult.text.length > 0);
-    assert.equal(fetchResult.metadata.path, fetchTarget.id);
+    assert.equal(fetchResult.metadata.path, fetchTarget.path);
 
     const listResult = await runStep(
       "List notes",
