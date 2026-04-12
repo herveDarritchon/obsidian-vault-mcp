@@ -16,6 +16,7 @@ async function createVaultFixture() {
 
   await fs.mkdir(path.join(root, "02-Work/TOR2e/specs"), { recursive: true });
   await fs.mkdir(path.join(root, "02-Work/Drafts"), { recursive: true });
+  await fs.mkdir(path.join(root, "03-Knowledge/Concepts"), { recursive: true });
   await fs.mkdir(path.join(root, "Secrets"), { recursive: true });
 
   await fs.writeFile(
@@ -26,6 +27,11 @@ async function createVaultFixture() {
   await fs.writeFile(
     path.join(root, "02-Work/Drafts/launch-post.md"),
     "# Launch post\n\nDraft text.\n",
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(root, "03-Knowledge/Concepts/memory.md"),
+    "# Memory\n\nReference material.\n",
     "utf8"
   );
   await fs.writeFile(path.join(root, "Secrets/token.md"), "super-secret\n", "utf8");
@@ -129,5 +135,42 @@ test("propose_change enforces branch, commit, and line-delta limits before git",
       }),
     (error: unknown) =>
       error instanceof RefusalError && /Branch must follow the convention/.test(error.message)
+  );
+});
+
+test("propose-only paths allow draft generation but refuse propose_change", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const draft = await service.updateNoteDraft({
+    path: "03-Knowledge/Concepts/memory.md",
+    mode: "append",
+    content: "Additional reference note.\n"
+  });
+
+  assert.equal(draft.policy.read, true);
+  assert.equal(draft.policy.write, false);
+  assert.equal(draft.policy.proposePatch, true);
+  assert.equal(draft.warnings.length, 1);
+  assert.match(draft.warnings[0] ?? "", /propose-only/i);
+  assert.match(draft.draft_content, /Additional reference note/);
+
+  await assert.rejects(
+    () =>
+      service.proposeChange({
+        title: "Attempt propose-only write",
+        base_branch: "main",
+        branch_name: "ai/knowledge/propose-only-write",
+        commit_message: "ai(knowledge): attempt propose-only write",
+        pr_body: "Testing",
+        changes: [
+          {
+            path: "03-Knowledge/Concepts/memory.md",
+            mode: "append",
+            content: "Additional reference note.\n"
+          }
+        ]
+      }),
+    (error: unknown) => error instanceof RefusalError && /Write denied by policy/.test(error.message)
   );
 });
