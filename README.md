@@ -74,6 +74,38 @@ GITHUB_TOKEN=github_pat_xxx
 
 Si tu veux juste passer du sandbox E2E au vrai vault, c’est suffisant. Aucun changement de code ou de contrat de tool n’est nécessaire.
 
+### Profil exact pour `TOR2e - TOR for Foundry VTT`
+
+Le repo de prod suivant est maintenant préconfiguré dans le dépôt :
+
+- repo GitHub : `git@github.com:herveDarritchon/tor2e-obsidian-private-vault.git`
+- clone local : `/Users/hervedarritchon/Documents/TOR2e - TOR for Foundry VTT`
+- target MCP : `tor2e-production`
+
+Fichiers prêts à l’emploi :
+
+- [config/vault-targets.tor2e-production.yaml](/Users/hervedarritchon/Documents/obsidian-vault-mcp/config/vault-targets.tor2e-production.yaml)
+- [config/vault-access-policy.production.yaml](/Users/hervedarritchon/Documents/obsidian-vault-mcp/config/vault-access-policy.production.yaml)
+- [.env.tor2e.production.example](/Users/hervedarritchon/Documents/obsidian-vault-mcp/.env.tor2e.production.example)
+
+Le plus simple est :
+
+```bash
+cp .env.tor2e.production.example .env
+npm run dev
+```
+
+Puis renseigne seulement ton `GITHUB_TOKEN` dans `.env`.
+
+Policy initiale de prod :
+
+- `write_via_pr` : `02-Work/TOR2e/working/**`, `02-Work/TOR2e/scratch/**`, `02-Work/TOR2e/specs/**`, `02-Work/Drafts/**`
+- `propose_only` : `README.md`, `02-Work/TOR2e/reference/**`, `03-Knowledge/**`, `04-Archive/**`, `90-Templates/**`
+- `deny` : `Private/**`, `Secrets/**`, `99-System/policy/**`, `99-System/prompts/**`, `99-System/schemas/**`
+- tout le reste est refusé par `defaults`
+
+Ça te donne une première mise en prod prudente : ChatGPT peut travailler sur le périmètre TOR2e utile, sans pouvoir écrire partout dans le vault.
+
 ## Gérer plusieurs repos cibles
 
 Le serveur peut maintenant charger plusieurs cibles nommées en même temps. C’est utile si tu veux :

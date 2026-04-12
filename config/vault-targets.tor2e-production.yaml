@@ -1,0 +1,9 @@
+version: 1
+defaultTarget: tor2e-production
+targets:
+  tor2e-production:
+    repoRoot: /Users/hervedarritchon/Documents/TOR2e - TOR for Foundry VTT
+    policyFile: ./vault-access-policy.production.yaml
+    github:
+      owner: herveDarritchon
+      repo: tor2e-obsidian-private-vault
