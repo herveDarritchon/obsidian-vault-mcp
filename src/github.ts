@@ -4,7 +4,7 @@ interface GitHubClientOptions {
   apiBaseUrl: string;
   owner: string;
   repo: string;
-  token: string;
+  token?: string;
 }
 
 interface PullRequestPayload {
@@ -95,6 +95,12 @@ export class GitHubClient {
   }
 
   private headers(): Record<string, string> {
+    if (!this.options.token) {
+      throw new Error(
+        "GITHUB_TOKEN is required to create or verify GitHub pull requests."
+      );
+    }
+
     return {
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${this.options.token}`,

@@ -46,6 +46,26 @@ npm start
 
 L’endpoint de santé est `GET /health`.
 
+## Test E2E réel
+
+Un harness réel est disponible pour exécuter le flux MCP complet contre un vrai clone git et un vrai repo GitHub.
+
+Prépare d’abord un fichier `.env.e2e` à partir de [.env.e2e.example](/Users/hervedarritchon/Documents/obsidian-vault-mcp/.env.e2e.example), puis lance :
+
+```bash
+npm run test:e2e:real
+```
+
+Le script :
+
+- démarre le serveur MCP localement sur un port éphémère ;
+- appelle les tools via un client MCP HTTP ;
+- exécute `read_note`, `search_notes`, `update_note_draft`, puis `propose_change` ;
+- vérifie que la PR GitHub a bien été créée ;
+- peut fermer la PR et supprimer la branche si `E2E_CLEANUP=true`.
+
+Pour un premier passage sûr, cible un fichier sandbox existant comme `02-Work/TOR2e/working/test-note.md`.
+
 ## Format de policy
 
 La policy d’exemple est dans [config/vault-access-policy.example.yaml](/Users/hervedarritchon/Documents/obsidian-vault-mcp/config/vault-access-policy.example.yaml).

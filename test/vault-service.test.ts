@@ -3,12 +3,13 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import type { AppConfig } from "../src/config.js";
 import { RefusalError } from "../src/errors.js";
 import { VaultService } from "../src/vault-service.js";
 
-const policyPath = new URL("../config/vault-access-policy.example.yaml", import.meta.url);
+const policyPath = fileURLToPath(new URL("../config/vault-access-policy.example.yaml", import.meta.url));
 
 async function createVaultFixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "obsidian-vault-fixture-"));
@@ -39,7 +40,7 @@ function makeConfig(vaultRepoRoot: string, overrides: Partial<AppConfig> = {}): 
     mcpPath: "/mcp",
     mcpAuthToken: undefined,
     vaultRepoRoot,
-    vaultPolicyFile: policyPath.pathname,
+    vaultPolicyFile: policyPath,
     githubOwner: "example",
     githubRepo: "vault",
     githubToken: "test-token",

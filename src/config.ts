@@ -4,7 +4,7 @@ import path from "node:path";
 import { z } from "zod";
 
 const configSchema = z.object({
-  PORT: z.coerce.number().int().positive().default(3000),
+  PORT: z.coerce.number().int().min(0).default(3000),
   HOST: z.string().min(1).default("127.0.0.1"),
   MCP_PATH: z.string().min(1).default("/mcp"),
   MCP_AUTH_TOKEN: z.string().trim().optional().transform((value) => value || undefined),
@@ -12,7 +12,7 @@ const configSchema = z.object({
   VAULT_POLICY_FILE: z.string().min(1),
   GITHUB_OWNER: z.string().min(1),
   GITHUB_REPO: z.string().min(1),
-  GITHUB_TOKEN: z.string().min(1),
+  GITHUB_TOKEN: z.string().trim().optional().transform((value) => value || undefined),
   GITHUB_API_BASE_URL: z.string().url().default("https://api.github.com"),
   GIT_AUTHOR_NAME: z.string().trim().optional().transform((value) => value || undefined),
   GIT_AUTHOR_EMAIL: z.string().trim().optional().transform((value) => value || undefined),

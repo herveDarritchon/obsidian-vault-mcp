@@ -1,0 +1,25 @@
+version: 1
+defaults:
+  read: false
+  write: false
+  proposePatch: false
+  openPrOrMr: deny
+rules:
+  - name: hard-deny-private
+    effect: deny
+    paths:
+      - Private/**
+      - Secrets/**
+      - 99-System/policy/**
+      - 99-System/prompts/**
+      - 99-System/schemas/**
+
+  - name: e2e-write-via-pr
+    effect: write_via_pr
+    paths:
+      - Obsician MCP E2E Vault/**
+
+  - name: e2e-root-read-only
+    effect: propose_only
+    paths:
+      - README.md

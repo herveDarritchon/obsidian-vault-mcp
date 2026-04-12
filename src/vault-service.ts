@@ -172,7 +172,7 @@ export class VaultService {
       apiBaseUrl: config.githubApiBaseUrl,
       owner: config.githubOwner,
       repo: config.githubRepo,
-      token: config.githubToken
+      ...(config.githubToken ? { token: config.githubToken } : {})
     });
 
     return new VaultService(config, policy, github);

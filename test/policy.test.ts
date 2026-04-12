@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { VaultPolicyEngine } from "../src/policy.js";
 
-const policyPath = new URL("../config/vault-access-policy.example.yaml", import.meta.url);
+const policyPath = fileURLToPath(new URL("../config/vault-access-policy.example.yaml", import.meta.url));
 
 test("policy resolves write, propose-only, and denied paths", async () => {
   const policy = await VaultPolicyEngine.load(policyPath);
