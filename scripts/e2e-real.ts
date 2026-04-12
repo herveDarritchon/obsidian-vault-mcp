@@ -16,6 +16,7 @@ import { loadConfig } from "../src/config.js";
 import { logEvent } from "../src/logger.js";
 
 const execFileAsync = promisify(execFile);
+process.env.LOG_FORMAT ??= "silent";
 
 const envFile = process.env.E2E_ENV_FILE ?? ".env.e2e";
 loadDotenv({ path: envFile, override: true });
@@ -44,6 +45,150 @@ type ToolTextResult = {
   structuredContent?: Record<string, unknown>;
   isError?: boolean;
 };
+
+type StepStatus = "passed" | "failed";
+
+interface StepRecord {
+  name: string;
+  status: StepStatus;
+  durationMs: number;
+  detail: string;
+}
+
+const ANSI = {
+  reset: "\u001b[0m",
+  bold: "\u001b[1m",
+  dim: "\u001b[2m",
+  red: "\u001b[31m",
+  green: "\u001b[32m",
+  yellow: "\u001b[33m",
+  blue: "\u001b[34m",
+  cyan: "\u001b[36m"
+};
+
+const steps: StepRecord[] = [];
+
+function color(text: string, tone: keyof typeof ANSI): string {
+  return `${ANSI[tone]}${text}${ANSI.reset}`;
+}
+
+function printLine(text = ""): void {
+  console.log(text);
+}
+
+function printBanner(title: string): void {
+  printLine(color(`\n🧪 ${title}`, "bold"));
+}
+
+function printInfo(label: string, value: string): void {
+  printLine(`${color(label.padEnd(14), "cyan")} ${value}`);
+}
+
+function summarizeError(error: unknown): { title: string; hint?: string } {
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (message.includes("GITHUB_TOKEN is required")) {
+    return {
+      title: "GitHub token manquant",
+      hint: "Renseigne GITHUB_TOKEN dans .env.e2e pour activer la création de PR."
+    };
+  }
+
+  if (message.includes("Resource not accessible by personal access token")) {
+    return {
+      title: "Token GitHub insuffisant pour créer la PR",
+      hint: "Vérifie que le token couvre ce repo et accorde 'Pull requests: write'."
+    };
+  }
+
+  if (message.includes("not tracked on")) {
+    return {
+      title: "Fichier de test non tracké sur la branche de base",
+      hint: "Committe la note cible sur main avant de lancer propose_change."
+    };
+  }
+
+  if (message.includes("expected_sha256 mismatch")) {
+    return {
+      title: "Hash de fraîcheur invalide",
+      hint: "Relis la note avant d'appeler update_note_draft ou propose_change."
+    };
+  }
+
+  if (message.includes("Write denied by policy") || message.includes("Read denied by policy")) {
+    return {
+      title: "Policy MCP bloquante",
+      hint: "Vérifie la policy YAML et le chemin de la note ciblée."
+    };
+  }
+
+  return {
+    title: message
+  };
+}
+
+async function runStep<T>(
+  name: string,
+  action: () => Promise<T>,
+  onSuccess: (result: T) => string
+): Promise<T> {
+  const startedAt = Date.now();
+  printLine(`\n${color("🔹", "blue")} ${name} ${color("…", "dim")}`);
+
+  try {
+    const result = await action();
+    const durationMs = Date.now() - startedAt;
+    const detail = onSuccess(result);
+    steps.push({ name, status: "passed", durationMs, detail });
+    printLine(`${color("✅", "green")} ${name} ${color(`(${durationMs} ms)`, "dim")}`);
+    printLine(`   ${detail}`);
+    return result;
+  } catch (error) {
+    const durationMs = Date.now() - startedAt;
+    const summary = summarizeError(error);
+    steps.push({ name, status: "failed", durationMs, detail: summary.title });
+    printLine(`${color("❌", "red")} ${name} ${color(`(${durationMs} ms)`, "dim")}`);
+    printLine(`   ${summary.title}`);
+
+    if (summary.hint) {
+      printLine(`   ${color("💡", "yellow")} ${summary.hint}`);
+    }
+
+    throw error;
+  }
+}
+
+function printSummary(context: {
+  elapsedMs: number;
+  mode: "pre-pr" | "full";
+  notePath: string;
+  branchName: string;
+  pullRequestUrl?: string;
+}) {
+  const hasFailure = steps.some((step) => step.status === "failed");
+  const heading = hasFailure ? "❌ E2E failed" : "✅ E2E passed";
+
+  printLine();
+  printLine(color("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "dim"));
+  printLine(color(heading, hasFailure ? "red" : "green"));
+  printLine(color("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "dim"));
+
+  for (const step of steps) {
+    const icon = step.status === "passed" ? color("✔", "green") : color("✘", "red");
+    printLine(`${icon} ${step.name} ${color(`(${step.durationMs} ms)`, "dim")}`);
+    printLine(`  ${step.detail}`);
+  }
+
+  printLine();
+  printInfo("Mode", context.mode);
+  printInfo("Note", context.notePath);
+  printInfo("Branch", context.branchName);
+  printInfo("Duration", `${context.elapsedMs} ms`);
+
+  if (context.pullRequestUrl) {
+    printInfo("PR", context.pullRequestUrl);
+  }
+}
 
 function parseToolJson<T>(result: ToolTextResult): T {
   if (result.isError) {
@@ -142,8 +287,10 @@ async function verifyPullRequest(owner: string, repo: string, token: string, prN
 }
 
 async function main() {
+  const startedAt = Date.now();
   const e2eConfig = e2eConfigSchema.parse(process.env);
   const config = loadConfig();
+  const mode = e2eConfig.E2E_SKIP_PROPOSE_CHANGE ? "pre-pr" : "full";
   const app = await createHttpApp({
     ...config,
     host: "127.0.0.1",
@@ -161,6 +308,15 @@ async function main() {
   const branchName = `ai/${e2eConfig.E2E_BRANCH_SCOPE}/${e2eConfig.E2E_BRANCH_SLUG}-${runId}`;
   const commitMessage = `ai(${e2eConfig.E2E_BRANCH_SCOPE}): verify end-to-end PR workflow`;
   const marker = `\n<!-- obsidian-vault-mcp-e2e:${runId} -->\n`;
+  let pullRequestUrl: string | undefined;
+
+  printBanner("Obsidian Vault MCP E2E");
+  printInfo("Env file", envFile);
+  printInfo("Repo", config.vaultRepoRoot);
+  printInfo("Mode", mode);
+  printInfo("Note", e2eConfig.E2E_NOTE_PATH);
+  printInfo("Search root", e2eConfig.E2E_SEARCH_ROOT);
+  printInfo("Branch", branchName);
 
   if (!e2eConfig.E2E_SKIP_PROPOSE_CHANGE) {
     if (!config.githubToken) {
@@ -169,7 +325,11 @@ async function main() {
       );
     }
 
-    await ensureTrackedFile(config.vaultRepoRoot, e2eConfig.E2E_NOTE_PATH);
+    await runStep(
+      "Verify tracked note",
+      () => ensureTrackedFile(config.vaultRepoRoot, e2eConfig.E2E_NOTE_PATH),
+      () => `Tracked on ${e2eConfig.E2E_BASE_BRANCH}`
+    );
   }
 
   const transport = new StreamableHTTPClientTransport(baseUrl, {
@@ -190,16 +350,26 @@ async function main() {
   });
 
   try {
-    await client.connect(
-      transport as unknown as Parameters<typeof client.connect>[0]
+    await runStep(
+      "Connect MCP client",
+      () =>
+        client.connect(
+          transport as unknown as Parameters<typeof client.connect>[0]
+        ),
+      () => `Connected to ${baseUrl.toString()}`
     );
 
-    const tools = await client.request(
-      {
-        method: "tools/list",
-        params: {}
-      },
-      ListToolsResultSchema
+    const tools = await runStep(
+      "List tools",
+      () =>
+        client.request(
+          {
+            method: "tools/list",
+            params: {}
+          },
+          ListToolsResultSchema
+        ),
+      (result) => `Found ${result.tools.length} tools: ${result.tools.map((tool) => tool.name).join(", ")}`
     );
 
     assert.deepEqual(
@@ -207,82 +377,118 @@ async function main() {
       ["propose_change", "read_note", "search_notes", "update_note_draft"]
     );
 
-    const readResult = await callTool<{
-      path: string;
-      sha256: string;
-      content: string;
-      policy: { read: boolean; write: boolean };
-    }>(client, "read_note", {
-      path: e2eConfig.E2E_NOTE_PATH
-    });
+    const readResult = await runStep(
+      "Read note",
+      () =>
+        callTool<{
+          path: string;
+          sha256: string;
+          content: string;
+          policy: { read: boolean; write: boolean };
+        }>(client, "read_note", {
+          path: e2eConfig.E2E_NOTE_PATH
+        }),
+      (result) => `sha=${result.sha256.slice(0, 12)} read=${String(result.policy.read)} write=${String(result.policy.write)}`
+    );
 
     assert.equal(readResult.path, e2eConfig.E2E_NOTE_PATH);
     assert.equal(readResult.policy.read, true);
 
-    const searchResult = await callTool<{ results: Array<{ path: string }> }>(client, "search_notes", {
-      query: e2eConfig.E2E_SEARCH_QUERY,
-      roots: [e2eConfig.E2E_SEARCH_ROOT],
-      limit: 10
-    });
+    const searchResult = await runStep(
+      "Search notes",
+      () =>
+        callTool<{ results: Array<{ path: string }> }>(client, "search_notes", {
+          query: e2eConfig.E2E_SEARCH_QUERY,
+          roots: [e2eConfig.E2E_SEARCH_ROOT],
+          limit: 10
+        }),
+      (result) => {
+        const topPath = result.results[0]?.path ?? "none";
+        return `${result.results.length} result(s), top hit: ${topPath}`;
+      }
+    );
 
     assert.ok(
       searchResult.results.some((result) => result.path === e2eConfig.E2E_NOTE_PATH),
       `Expected search_notes to return ${e2eConfig.E2E_NOTE_PATH}`
     );
 
-    const draftResult = await callTool<{
-      draft_content: string;
-      current_sha256: string;
-      draft_sha256: string;
-      diff_summary: { line_delta: number };
-    }>(client, "update_note_draft", {
-      path: e2eConfig.E2E_NOTE_PATH,
-      mode: "append",
-      content: marker,
-      expected_sha256: readResult.sha256
-    });
+    const draftResult = await runStep(
+      "Prepare draft",
+      () =>
+        callTool<{
+          draft_content: string;
+          current_sha256: string;
+          draft_sha256: string;
+          diff_summary: { line_delta: number };
+        }>(client, "update_note_draft", {
+          path: e2eConfig.E2E_NOTE_PATH,
+          mode: "append",
+          content: marker,
+          expected_sha256: readResult.sha256
+        }),
+      (result) =>
+        `sha ${result.current_sha256.slice(0, 12)} -> ${result.draft_sha256.slice(0, 12)}, line delta ${result.diff_summary.line_delta}`
+    );
 
     assert.equal(draftResult.current_sha256, readResult.sha256);
     assert.ok(draftResult.draft_content.includes(marker.trim()));
     assert.ok(draftResult.diff_summary.line_delta >= 1);
 
     if (e2eConfig.E2E_SKIP_PROPOSE_CHANGE) {
+      steps.push({
+        name: "Skip propose_change",
+        status: "passed",
+        durationMs: 0,
+        detail: "Pre-PR mode enabled in .env.e2e"
+      });
       logEvent("info", "e2e_real_pre_pr_completed", {
         notePath: e2eConfig.E2E_NOTE_PATH,
         mode: "read-search-draft"
       });
     } else {
-      const proposeResult = await callTool<{
-        branch: string;
-        commit_sha: string;
-        pull_request: { number: number; url: string };
-        changed_files: string[];
-      }>(client, "propose_change", {
-        title: `E2E validation ${runId}`,
-        base_branch: e2eConfig.E2E_BASE_BRANCH,
-        branch_name: branchName,
-        commit_message: commitMessage,
-        pr_body: `Automated E2E validation run ${runId}.`,
-        changes: [
-          {
-            path: e2eConfig.E2E_NOTE_PATH,
-            mode: "append",
-            content: marker,
-            expected_sha256: readResult.sha256
-          }
-        ]
-      });
+      const proposeResult = await runStep(
+        "Create branch, push, open PR",
+        () =>
+          callTool<{
+            branch: string;
+            commit_sha: string;
+            pull_request: { number: number; url: string };
+            changed_files: string[];
+          }>(client, "propose_change", {
+            title: `E2E validation ${runId}`,
+            base_branch: e2eConfig.E2E_BASE_BRANCH,
+            branch_name: branchName,
+            commit_message: commitMessage,
+            pr_body: `Automated E2E validation run ${runId}.`,
+            changes: [
+              {
+                path: e2eConfig.E2E_NOTE_PATH,
+                mode: "append",
+                content: marker,
+                expected_sha256: readResult.sha256
+              }
+            ]
+          }),
+        (result) => `branch=${result.branch} commit=${result.commit_sha.slice(0, 12)} pr=${result.pull_request.url}`
+      );
 
       assert.equal(proposeResult.branch, branchName);
       assert.equal(proposeResult.changed_files.length, 1);
       assert.equal(proposeResult.changed_files[0], e2eConfig.E2E_NOTE_PATH);
       assert.ok(proposeResult.pull_request.url.includes(`/pull/${proposeResult.pull_request.number}`));
+      pullRequestUrl = proposeResult.pull_request.url;
 
-      const verifiedPullRequest = await verifyPullRequest(
-        config.githubOwner,
-        config.githubRepo,
-        config.githubToken!,
-        proposeResult.pull_request.number
+      const verifiedPullRequest = await runStep(
+        "Verify GitHub PR",
+        () =>
+          verifyPullRequest(
+            config.githubOwner,
+            config.githubRepo,
+            config.githubToken!,
+            proposeResult.pull_request.number
+          ),
+        (result) => `PR #${result.number} is ${result.state} on ${result.base.ref} <- ${result.head.ref}`
       );
 
       assert.equal(verifiedPullRequest.number, proposeResult.pull_request.number);
@@ -297,9 +503,15 @@ async function main() {
       });
 
       if (e2eConfig.E2E_CLEANUP) {
-        await closePullRequest(config.githubOwner, config.githubRepo, config.githubToken!, proposeResult.pull_request.number);
-        await deleteBranchRef(config.githubOwner, config.githubRepo, config.githubToken!, branchName);
-        await deleteLocalBranch(config.vaultRepoRoot, branchName);
+        await runStep(
+          "Cleanup PR and branch",
+          async () => {
+            await closePullRequest(config.githubOwner, config.githubRepo, config.githubToken!, proposeResult.pull_request.number);
+            await deleteBranchRef(config.githubOwner, config.githubRepo, config.githubToken!, branchName);
+            await deleteLocalBranch(config.vaultRepoRoot, branchName);
+          },
+          () => `Closed PR #${proposeResult.pull_request.number} and removed ${branchName}`
+        );
         logEvent("info", "e2e_real_cleanup_completed", {
           branch: branchName,
           pullRequestNumber: proposeResult.pull_request.number
@@ -319,9 +531,31 @@ async function main() {
       });
     });
   }
+
+  printSummary({
+    elapsedMs: Date.now() - startedAt,
+    mode,
+    notePath: e2eConfig.E2E_NOTE_PATH,
+    branchName,
+    ...(pullRequestUrl ? { pullRequestUrl } : {})
+  });
 }
 
 main().catch((error) => {
-  console.error(error instanceof Error ? error.message : error);
+  printSummary({
+    elapsedMs: 0,
+    mode: process.env.E2E_SKIP_PROPOSE_CHANGE === "true" ? "pre-pr" : "full",
+    notePath: process.env.E2E_NOTE_PATH ?? "unknown",
+    branchName: "not-created"
+  });
+  const summary = summarizeError(error);
+  printLine();
+  printLine(`${color("❗ Why it failed", "red")}`);
+  printLine(`   ${summary.title}`);
+
+  if (summary.hint) {
+    printLine(`   ${color("💡", "yellow")} ${summary.hint}`);
+  }
+
   process.exitCode = 1;
 });
