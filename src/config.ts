@@ -17,6 +17,7 @@ const baseConfigSchema = z.object({
   GITHUB_OWNER: z.string().trim().optional().transform((value) => value || undefined),
   GITHUB_REPO: z.string().trim().optional().transform((value) => value || undefined),
   GITHUB_TOKEN: z.string().trim().optional().transform((value) => value || undefined),
+  GITHUB_DEFAULT_BRANCH: z.string().trim().min(1).default("main"),
   GITHUB_API_BASE_URL: z.string().url().default("https://api.github.com"),
   GIT_AUTHOR_NAME: z.string().trim().optional().transform((value) => value || undefined),
   GIT_AUTHOR_EMAIL: z.string().trim().optional().transform((value) => value || undefined),
@@ -29,7 +30,8 @@ const targetEntrySchema = z.object({
   policyFile: z.string().min(1),
   github: z.object({
     owner: z.string().min(1),
-    repo: z.string().min(1)
+    repo: z.string().min(1),
+    defaultBranch: z.string().min(1).optional()
   }),
   githubApiBaseUrl: z.string().url().optional(),
   githubTokenEnv: z.string().min(1).optional(),
@@ -58,6 +60,7 @@ export interface VaultTargetConfig {
   githubOwner: string;
   githubRepo: string;
   githubToken?: string;
+  githubDefaultBranch: string;
   githubApiBaseUrl: string;
   gitAuthorName?: string;
   gitAuthorEmail?: string;
@@ -109,6 +112,7 @@ function buildLegacyTargetConfig(parsed: ParsedBaseConfig): AppConfig {
         githubOwner: requiredValue(parsed.GITHUB_OWNER, "GITHUB_OWNER"),
         githubRepo: requiredValue(parsed.GITHUB_REPO, "GITHUB_REPO"),
         ...(parsed.GITHUB_TOKEN ? { githubToken: parsed.GITHUB_TOKEN } : {}),
+        githubDefaultBranch: parsed.GITHUB_DEFAULT_BRANCH,
         githubApiBaseUrl: parsed.GITHUB_API_BASE_URL.replace(/\/$/, ""),
         ...(parsed.GIT_AUTHOR_NAME ? { gitAuthorName: parsed.GIT_AUTHOR_NAME } : {}),
         ...(parsed.GIT_AUTHOR_EMAIL ? { gitAuthorEmail: parsed.GIT_AUTHOR_EMAIL } : {}),
@@ -169,6 +173,7 @@ function loadTargetsFile(parsed: ParsedBaseConfig): AppConfig {
         githubOwner: entry.github.owner,
         githubRepo: entry.github.repo,
         ...(token ? { githubToken: token } : {}),
+        githubDefaultBranch: entry.github.defaultBranch ?? parsed.GITHUB_DEFAULT_BRANCH,
         githubApiBaseUrl: (entry.githubApiBaseUrl ?? parsed.GITHUB_API_BASE_URL).replace(/\/$/, ""),
         ...(gitAuthorName ? { gitAuthorName } : {}),
         ...(gitAuthorEmail ? { gitAuthorEmail } : {}),

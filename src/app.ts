@@ -110,6 +110,12 @@ function withStructuredContent<T extends Record<string, unknown>>(output: T) {
   };
 }
 
+function withJsonTextOnly<T extends Record<string, unknown>>(output: T) {
+  return {
+    content: [{ type: "text" as const, text: jsonText(output) }]
+  };
+}
+
 function createTargetResolver(services: Map<string, VaultService>, defaultTarget: string) {
   return (requestedTarget?: string) => {
     const targetName = requestedTarget?.trim() || defaultTarget;
@@ -299,6 +305,56 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           result: isRefusalError(error) ? "refusal" : "error",
           target: target ?? config.defaultTarget,
           paths: [path],
+          error: message
+        });
+        return toolError(message);
+      }
+    }
+  );
+
+  server.registerTool(
+    "search",
+    {
+      title: "Search vault documents",
+      description:
+        "Searches readable vault documents and returns OpenAI-compatible document search results.",
+      inputSchema: {
+        query: z.string()
+      },
+      annotations: {
+        readOnlyHint: true
+      }
+    },
+    async ({ query }) => {
+      const requestId = randomUUID();
+      logEvent("info", "tool_invoked", {
+        requestId,
+        tool: "search",
+        target: config.defaultTarget,
+        paths: ["."],
+        limit: 10
+      });
+
+      try {
+        const { targetName, service } = resolveTarget();
+        const output = await service.searchOpenAI(query, 10);
+        logEvent("info", "tool_completed", {
+          requestId,
+          tool: "search",
+          result: "success",
+          target: targetName,
+          paths: output.results.map((result) => result.id),
+          resultCount: output.results.length
+        });
+        return withJsonTextOnly(output);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "search failed";
+        logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
+          requestId,
+          tool: "search",
+          result: isRefusalError(error) ? "refusal" : "error",
+          target: config.defaultTarget,
+          paths: ["."],
           error: message
         });
         return toolError(message);

@@ -14,6 +14,7 @@ import { VaultPolicyEngine } from "./policy.js";
 import type {
   ListNotesResult,
   NoteChange,
+  OpenAISearchResultSet,
   ProposeChangeResult,
   ReadNoteResult,
   ReadNoteExcerptResult,
@@ -162,6 +163,37 @@ function scorePath(query: string, filePath: string): number {
   return filePath.toLowerCase().includes(query.toLowerCase()) ? 0.5 : 0;
 }
 
+function extractNoteTitle(content: string, relativePath: string): string {
+  const heading = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => /^#\s+/.test(line));
+
+  if (heading) {
+    return heading.replace(/^#\s+/, "").trim();
+  }
+
+  return path.basename(relativePath, path.extname(relativePath)).replace(/[-_]+/g, " ");
+}
+
+function buildGitHubRepoWebBase(apiBaseUrl: string): string {
+  const parsed = new URL(apiBaseUrl);
+
+  if (parsed.hostname === "api.github.com") {
+    return "https://github.com";
+  }
+
+  const pathname = parsed.pathname.replace(/\/api\/v3\/?$/, "").replace(/\/$/, "");
+  return `${parsed.protocol}//${parsed.host}${pathname}`;
+}
+
+function encodePathForUrl(relativePath: string): string {
+  return normalizeVaultPath(relativePath)
+    .split("/")
+    .map((segment) => encodeURIComponent(segment))
+    .join("/");
+}
+
 export class VaultService {
   private constructor(
     private readonly config: VaultTargetConfig,
@@ -272,6 +304,24 @@ export class VaultService {
 
     results.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
     return { results: results.slice(0, limit) };
+  }
+
+  async searchOpenAI(query: string, limit: number): Promise<OpenAISearchResultSet> {
+    const searchResults = await this.searchNotes(query, undefined, limit);
+    const results = await Promise.all(
+      searchResults.results.map(async (result) => {
+        const note = await this.readNote(result.path);
+
+        return {
+          id: result.path,
+          title: extractNoteTitle(note.content, result.path),
+          url: this.buildDocumentUrl(result.path),
+          text: result.snippet
+        };
+      })
+    );
+
+    return { results };
   }
 
   async updateNoteDraft(change: NoteChange): Promise<UpdateDraftResult> {
@@ -456,6 +506,13 @@ export class VaultService {
       content,
       policy: access
     };
+  }
+
+  private buildDocumentUrl(relativePath: string): string {
+    const webBase = buildGitHubRepoWebBase(this.config.githubApiBaseUrl);
+    const encodedPath = encodePathForUrl(relativePath);
+
+    return `${webBase}/${this.config.githubOwner}/${this.config.githubRepo}/blob/${encodeURIComponent(this.config.githubDefaultBranch)}/${encodedPath}`;
   }
 
   private async searchDirectory(

@@ -47,6 +47,7 @@ function makeConfig(vaultRepoRoot: string, overrides: Partial<VaultTargetConfig>
     githubOwner: "example",
     githubRepo: "vault",
     githubToken: "test-token",
+    githubDefaultBranch: "main",
     githubApiBaseUrl: "https://api.github.com",
     gitAuthorName: "Test Bot",
     gitAuthorEmail: "bot@example.com",
@@ -154,6 +155,22 @@ test("list_notes refuses an explicit blacklisted root", async () => {
   await assert.rejects(
     () => service.listNotes("Secrets", 10),
     (error: unknown) => error instanceof RefusalError && /Search denied by policy/.test(error.message)
+  );
+});
+
+test("searchOpenAI returns OpenAI-compatible document results", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const output = await service.searchOpenAI("Initial content", 5);
+
+  assert.equal(output.results.length, 1);
+  assert.equal(output.results[0]?.id, "02-Work/TOR2e/specs/community.md");
+  assert.equal(output.results[0]?.title, "Community");
+  assert.match(output.results[0]?.text ?? "", /Initial content/);
+  assert.equal(
+    output.results[0]?.url,
+    "https://github.com/example/vault/blob/main/02-Work/TOR2e/specs/community.md"
   );
 });
 

@@ -52,6 +52,17 @@ export interface SearchNotesResult extends Record<string, unknown> {
   results: SearchResult[];
 }
 
+export interface OpenAISearchResult {
+  id: string;
+  title: string;
+  url: string;
+  text: string;
+}
+
+export interface OpenAISearchResultSet extends Record<string, unknown> {
+  results: OpenAISearchResult[];
+}
+
 export interface ListNotesItem {
   path: string;
 }
