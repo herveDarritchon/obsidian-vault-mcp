@@ -1,9 +1,8 @@
-import "dotenv/config";
-
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import fs from "node:fs";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -19,7 +18,17 @@ const execFileAsync = promisify(execFile);
 process.env.LOG_FORMAT ??= "silent";
 
 const envFile = process.env.E2E_ENV_FILE ?? ".env.e2e";
-loadDotenv({ path: envFile, override: true });
+
+function loadEnvFileIfPresent(path: string, override: boolean) {
+  if (!fs.existsSync(path)) {
+    return;
+  }
+
+  loadDotenv({ path, override });
+}
+
+loadEnvFileIfPresent(".env", false);
+loadEnvFileIfPresent(envFile, true);
 
 const e2eConfigSchema = z.object({
   E2E_TARGET: z.string().min(1).optional(),
@@ -121,6 +130,13 @@ function summarizeError(error: unknown): { title: string; hint?: string } {
     return {
       title: "Policy MCP bloquante",
       hint: "Vérifie la policy YAML et le chemin de la note ciblée."
+    };
+  }
+
+  if (message.includes("Unknown E2E target:")) {
+    return {
+      title: message,
+      hint: "Aligne E2E_TARGET avec le catalogue chargé par VAULT_TARGETS_FILE, ou retire E2E_TARGET pour utiliser la target par défaut."
     };
   }
 
@@ -345,8 +361,9 @@ async function main() {
   });
 
   if (!activeTarget) {
+    const loadedCatalog = process.env.VAULT_TARGETS_FILE ?? "(single-target mode)";
     throw new Error(
-      `Unknown E2E target: ${activeTargetName}. Available targets: ${Object.keys(config.targets).sort().join(", ")}`
+      `Unknown E2E target: ${activeTargetName}. Available targets: ${Object.keys(config.targets).sort().join(", ")}. Loaded config: ${loadedCatalog}`
     );
   }
 
@@ -634,13 +651,23 @@ async function main() {
 }
 
 main().catch((error) => {
+  const summary = summarizeError(error);
+
+  if (!steps.some((step) => step.status === "failed")) {
+    steps.push({
+      name: "Bootstrap E2E run",
+      status: "failed",
+      durationMs: 0,
+      detail: summary.title
+    });
+  }
+
   printSummary({
     elapsedMs: 0,
     mode: process.env.E2E_SKIP_PROPOSE_CHANGE === "true" ? "pre-pr" : "full",
     notePath: process.env.E2E_NOTE_PATH ?? "unknown",
     branchName: "not-created"
   });
-  const summary = summarizeError(error);
   printLine();
   printLine(`${color("❗ Why it failed", "red")}`);
   printLine(`   ${summary.title}`);

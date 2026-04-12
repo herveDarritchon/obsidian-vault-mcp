@@ -123,7 +123,30 @@ function loadTargetsFile(parsed: ParsedBaseConfig): AppConfig {
   const targetsFilePath = path.resolve(requiredValue(parsed.VAULT_TARGETS_FILE, "VAULT_TARGETS_FILE"));
   const fileDirectory = path.dirname(targetsFilePath);
   const raw = fs.readFileSync(targetsFilePath, "utf8");
-  const document = targetsFileSchema.parse(yaml.load(raw)) as ParsedTargetFile;
+  const loadedDocument = yaml.load(raw);
+
+  if (
+    loadedDocument &&
+    typeof loadedDocument === "object" &&
+    !Array.isArray(loadedDocument) &&
+    ("rules" in loadedDocument || "defaults" in loadedDocument) &&
+    !("targets" in loadedDocument)
+  ) {
+    throw new Error(
+      `VAULT_TARGETS_FILE must point to a targets catalog, but ${targetsFilePath} looks like a policy file. ` +
+        `Use a file like config/vault-targets.example.yaml, or unset VAULT_TARGETS_FILE to use single-target mode.`
+    );
+  }
+
+  const parsedDocument = targetsFileSchema.safeParse(loadedDocument);
+
+  if (!parsedDocument.success) {
+    throw new Error(
+      `Invalid targets catalog at ${targetsFilePath}: ${parsedDocument.error.message}`
+    );
+  }
+
+  const document = parsedDocument.data as ParsedTargetFile;
   const targetNames = Object.keys(document.targets);
   const defaultTarget = parsed.VAULT_TARGET ?? document.defaultTarget ?? targetNames[0];
 
