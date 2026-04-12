@@ -36,6 +36,10 @@ const e2eConfigSchema = z.object({
   E2E_SEARCH_ROOT: z.string().min(1).optional().default("02-Work/TOR2e/working"),
   E2E_LIST_ROOT: z.string().min(1).optional(),
   E2E_LIST_LIMIT: z.coerce.number().int().min(1).max(200).optional().default(200),
+  E2E_EXCERPT_PATH: z.string().min(1).optional(),
+  E2E_EXCERPT_MAX_CHARS: z.coerce.number().int().min(120).max(4000).optional().default(220),
+  E2E_SUMMARY_MAX_CHARS: z.coerce.number().int().min(80).max(1000).optional().default(120),
+  E2E_EXCERPT_MAX_HEADINGS: z.coerce.number().int().min(0).max(20).optional().default(6),
   E2E_SEARCH_QUERY: z.string().min(1).optional().default("test note"),
   E2E_SECTION_PATH: z.string().min(1).optional().default("README.md"),
   E2E_SECTION_HEADING: z.string().min(1).optional().default("# obsidian-mcp-e2e-vault"),
@@ -358,6 +362,7 @@ async function main() {
   const activeTargetName = e2eConfig.E2E_TARGET ?? config.defaultTarget;
   const activeTarget = config.targets[activeTargetName];
   const listRoot = e2eConfig.E2E_LIST_ROOT ?? e2eConfig.E2E_SEARCH_ROOT;
+  const excerptPath = e2eConfig.E2E_EXCERPT_PATH ?? e2eConfig.E2E_NOTE_PATH;
   const mode = e2eConfig.E2E_SKIP_PROPOSE_CHANGE ? "pre-pr" : "full";
   const app = await createHttpApp({
     ...config,
@@ -393,6 +398,7 @@ async function main() {
   printInfo("Note", e2eConfig.E2E_NOTE_PATH);
   printInfo("Search root", e2eConfig.E2E_SEARCH_ROOT);
   printInfo("List root", listRoot);
+  printInfo("Excerpt", `${excerptPath} (${e2eConfig.E2E_SUMMARY_MAX_CHARS}/${e2eConfig.E2E_EXCERPT_MAX_CHARS})`);
   printInfo("Section", `${e2eConfig.E2E_SECTION_PATH} -> ${e2eConfig.E2E_SECTION_HEADING}`);
   printInfo("Blacklist", e2eConfig.E2E_BLACKLISTED_PATH);
   printInfo("Branch", branchName);
@@ -453,7 +459,7 @@ async function main() {
 
     assert.deepEqual(
       tools.tools.map((tool) => tool.name).sort(),
-      ["list_notes", "propose_change", "read_note", "read_section", "search_notes", "update_note_draft"]
+      ["list_notes", "propose_change", "read_note", "read_note_excerpt", "read_section", "search_notes", "update_note_draft"]
     );
 
     const readResult = await runStep(
@@ -473,6 +479,35 @@ async function main() {
 
     assert.equal(readResult.path, e2eConfig.E2E_NOTE_PATH);
     assert.equal(readResult.policy.read, true);
+
+    const excerptResult = await runStep(
+      "Read note excerpt",
+      () =>
+        callTool<{
+          path: string;
+          note_sha256: string;
+          summary: string;
+          excerpt: string;
+          headings: string[];
+          policy: { read: boolean };
+        }>(client, "read_note_excerpt", {
+          target: activeTargetName,
+          path: excerptPath,
+          max_excerpt_chars: e2eConfig.E2E_EXCERPT_MAX_CHARS,
+          max_summary_chars: e2eConfig.E2E_SUMMARY_MAX_CHARS,
+          max_headings: e2eConfig.E2E_EXCERPT_MAX_HEADINGS
+        }),
+      (result) =>
+        `${result.path}: summary ${result.summary.length} chars, excerpt ${result.excerpt.length} chars, ${result.headings.length} heading(s)`
+    );
+
+    assert.equal(excerptResult.path, excerptPath);
+    assert.equal(excerptResult.policy.read, true);
+    assert.ok(excerptResult.note_sha256.length > 0);
+    assert.ok(excerptResult.summary.length > 0);
+    assert.ok(excerptResult.excerpt.length > 0);
+    assert.ok(excerptResult.summary.length <= e2eConfig.E2E_SUMMARY_MAX_CHARS);
+    assert.ok(excerptResult.excerpt.length <= e2eConfig.E2E_EXCERPT_MAX_CHARS);
 
     const listResult = await runStep(
       "List notes",

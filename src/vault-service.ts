@@ -9,13 +9,14 @@ import { RefusalError } from "./errors.js";
 import { GitHubClient } from "./github.js";
 import { sha256 } from "./lib/hash.js";
 import { normalizeVaultPath, resolveVaultPath, toVaultRelativePath } from "./lib/paths.js";
-import { applyChange, buildDiffSummary, extractSection } from "./markdown.js";
+import { applyChange, buildNoteExcerpt, buildDiffSummary, extractSection } from "./markdown.js";
 import { VaultPolicyEngine } from "./policy.js";
 import type {
   ListNotesResult,
   NoteChange,
   ProposeChangeResult,
   ReadNoteResult,
+  ReadNoteExcerptResult,
   ReadSectionResult,
   SearchNotesResult,
   SearchResult,
@@ -192,6 +193,25 @@ export class VaultService {
       section_heading: sectionHeading.trim(),
       note_sha256: note.sha256,
       content: extractSection(note.content, sectionHeading),
+      policy: note.policy
+    };
+  }
+
+  async readNoteExcerpt(
+    relativePath: string,
+    options: {
+      maxExcerptChars: number;
+      maxSummaryChars: number;
+      maxHeadings: number;
+    }
+  ): Promise<ReadNoteExcerptResult> {
+    const note = await this.readNote(relativePath);
+    const excerpt = buildNoteExcerpt(note.content, options);
+
+    return {
+      path: note.path,
+      note_sha256: note.sha256,
+      ...excerpt,
       policy: note.policy
     };
   }

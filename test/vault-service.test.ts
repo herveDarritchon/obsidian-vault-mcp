@@ -90,6 +90,40 @@ test("read_section refuses blacklisted paths", async () => {
   );
 });
 
+test("read_note_excerpt returns a compact summary, excerpt, and headings", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const output = await service.readNoteExcerpt("02-Work/TOR2e/specs/community.md", {
+    maxExcerptChars: 120,
+    maxSummaryChars: 80,
+    maxHeadings: 4
+  });
+
+  assert.equal(output.path, "02-Work/TOR2e/specs/community.md");
+  assert.ok(output.note_sha256.length > 0);
+  assert.match(output.summary, /Initial content/);
+  assert.match(output.excerpt, /Nested detail/);
+  assert.deepEqual(output.headings, ["# Community", "## Chronicle tab", "### Timeline", "## Social tab"]);
+  assert.ok(output.summary.length <= 80);
+  assert.ok(output.excerpt.length <= 120);
+});
+
+test("read_note_excerpt refuses blacklisted paths", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  await assert.rejects(
+    () =>
+      service.readNoteExcerpt("Secrets/token.md", {
+        maxExcerptChars: 200,
+        maxSummaryChars: 120,
+        maxHeadings: 3
+      }),
+    (error: unknown) => error instanceof RefusalError && /Read denied by policy/.test(error.message)
+  );
+});
+
 test("search_notes refuses an explicit blacklisted root", async () => {
   const vaultRepoRoot = await createVaultFixture();
   const service = await VaultService.create(makeConfig(vaultRepoRoot));

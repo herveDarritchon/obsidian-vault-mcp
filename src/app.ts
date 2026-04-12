@@ -36,6 +36,16 @@ const readSectionOutputSchema = {
   policy: z.object(policySchemaDefinition)
 };
 
+const readNoteExcerptOutputSchema = {
+  target: z.string(),
+  path: z.string(),
+  note_sha256: z.string(),
+  summary: z.string(),
+  excerpt: z.string(),
+  headings: z.array(z.string()),
+  policy: z.object(policySchemaDefinition)
+};
+
 const searchNotesOutputSchema = {
   target: z.string(),
   results: z.array(
@@ -226,6 +236,69 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           target: target ?? config.defaultTarget,
           paths: [path],
           sectionHeading: section_heading,
+          error: message
+        });
+        return toolError(message);
+      }
+    }
+  );
+
+  server.registerTool(
+    "read_note_excerpt",
+    {
+      title: "Read note excerpt",
+      description: "Reads a compact summary and excerpt from a note after policy checks.",
+      inputSchema: {
+        target: optionalTargetSchema,
+        path: z.string(),
+        max_excerpt_chars: z.number().int().min(120).max(4000).default(800),
+        max_summary_chars: z.number().int().min(80).max(1000).default(240),
+        max_headings: z.number().int().min(0).max(20).default(6)
+      },
+      outputSchema: readNoteExcerptOutputSchema,
+      annotations: {
+        readOnlyHint: true
+      }
+    },
+    async ({ target, path, max_excerpt_chars, max_summary_chars, max_headings }) => {
+      const requestId = randomUUID();
+      logEvent("info", "tool_invoked", {
+        requestId,
+        tool: "read_note_excerpt",
+        target: target ?? config.defaultTarget,
+        paths: [path],
+        maxExcerptChars: max_excerpt_chars,
+        maxSummaryChars: max_summary_chars,
+        maxHeadings: max_headings
+      });
+
+      try {
+        const { targetName, service } = resolveTarget(target);
+        const output = await service.readNoteExcerpt(path, {
+          maxExcerptChars: max_excerpt_chars,
+          maxSummaryChars: max_summary_chars,
+          maxHeadings: max_headings
+        });
+        logEvent("info", "tool_completed", {
+          requestId,
+          tool: "read_note_excerpt",
+          result: "success",
+          target: targetName,
+          paths: [output.path],
+          headings: output.headings.length
+        });
+        return withStructuredContent({
+          target: targetName,
+          ...output
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "read_note_excerpt failed";
+        logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
+          requestId,
+          tool: "read_note_excerpt",
+          result: isRefusalError(error) ? "refusal" : "error",
+          target: target ?? config.defaultTarget,
+          paths: [path],
           error: message
         });
         return toolError(message);

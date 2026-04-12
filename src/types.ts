@@ -33,6 +33,15 @@ export interface ReadSectionResult extends Record<string, unknown> {
   policy: PolicyAccess;
 }
 
+export interface ReadNoteExcerptResult extends Record<string, unknown> {
+  path: string;
+  note_sha256: string;
+  summary: string;
+  excerpt: string;
+  headings: string[];
+  policy: PolicyAccess;
+}
+
 export interface SearchResult {
   path: string;
   snippet: string;

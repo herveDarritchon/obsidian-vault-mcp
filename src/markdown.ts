@@ -1,11 +1,125 @@
 import type { ChangeMode, DraftDiffSummary, NoteChange } from "./types.js";
 
+interface NoteExcerptOptions {
+  maxExcerptChars: number;
+  maxSummaryChars: number;
+  maxHeadings: number;
+}
+
+interface NoteExcerpt {
+  summary: string;
+  excerpt: string;
+  headings: string[];
+}
+
 function countLines(value: string): number {
   return value === "" ? 0 : value.split(/\r?\n/).length;
 }
 
 function ensureTrailingNewline(value: string): string {
   return value.endsWith("\n") ? value : `${value}\n`;
+}
+
+function collapseWhitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function truncateAtWord(value: string, maxChars: number): string {
+  const normalized = collapseWhitespace(value);
+
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+
+  const sliced = normalized.slice(0, Math.max(0, maxChars - 1));
+  const lastSpace = sliced.lastIndexOf(" ");
+  const truncated = lastSpace >= Math.floor(maxChars * 0.6) ? sliced.slice(0, lastSpace) : sliced;
+  return `${truncated.trimEnd()}…`;
+}
+
+function normalizeInlineMarkdown(value: string): string {
+  return value
+    .replace(/\[\[([^\]]+)\]\]/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/[*_`~]+/g, "");
+}
+
+function extractHeadings(fullText: string, maxHeadings: number): string[] {
+  if (maxHeadings <= 0) {
+    return [];
+  }
+
+  return fullText
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^(#+)\s+/.test(line))
+    .slice(0, maxHeadings);
+}
+
+function extractTextBlocks(fullText: string): string[] {
+  const lines = fullText.split(/\r?\n/);
+  const blocks: string[] = [];
+  let buffer: string[] = [];
+  let inCodeFence = false;
+
+  const flushBuffer = () => {
+    const block = collapseWhitespace(buffer.join(" "));
+
+    if (block) {
+      blocks.push(block);
+    }
+
+    buffer = [];
+  };
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith("```")) {
+      flushBuffer();
+      inCodeFence = !inCodeFence;
+      continue;
+    }
+
+    if (inCodeFence) {
+      continue;
+    }
+
+    if (!trimmed) {
+      flushBuffer();
+      continue;
+    }
+
+    if (/^(#+)\s+/.test(trimmed)) {
+      flushBuffer();
+      continue;
+    }
+
+    const normalized = normalizeInlineMarkdown(trimmed)
+      .replace(/^[-*+]\s+/, "")
+      .replace(/^\d+\.\s+/, "");
+
+    if (normalized) {
+      buffer.push(normalized);
+    }
+  }
+
+  flushBuffer();
+  return blocks;
+}
+
+export function buildNoteExcerpt(fullText: string, options: NoteExcerptOptions): NoteExcerpt {
+  const headings = extractHeadings(fullText, options.maxHeadings);
+  const blocks = extractTextBlocks(fullText);
+  const excerptSource = blocks.slice(0, 3).join(" ");
+  const summarySource = blocks.slice(0, 2).join(" ");
+  const fallback = headings.slice(0, 3).join(" | ");
+
+  return {
+    summary: truncateAtWord(summarySource || fallback || "No summary available.", options.maxSummaryChars),
+    excerpt: truncateAtWord(excerptSource || summarySource || fallback || "No excerpt available.", options.maxExcerptChars),
+    headings
+  };
 }
 
 function headingDepth(heading: string): number {
