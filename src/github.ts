@@ -20,6 +20,24 @@ interface GitHubPullResponse {
   html_url: string;
 }
 
+function buildGitHubPermissionHint(response: Response): string {
+  const acceptedPermissions = response.headers.get("x-accepted-github-permissions");
+
+  if (!acceptedPermissions) {
+    return "";
+  }
+
+  return ` Accepted permissions: ${acceptedPermissions}.`;
+}
+
+function buildFineGrainedPatHint(response: Response): string {
+  if (response.status !== 403) {
+    return "";
+  }
+
+  return " If this is a fine-grained PAT, ensure the token includes this repository and grants 'Pull requests: write'.";
+}
+
 export class GitHubClient {
   constructor(private readonly options: GitHubClientOptions) {}
 
@@ -84,7 +102,9 @@ export class GitHubClient {
         }
       }
 
-      throw new Error(`GitHub pull request creation failed: ${response.status} ${body}`);
+      throw new Error(
+        `GitHub pull request creation failed: ${response.status} ${body}.${buildGitHubPermissionHint(response)}${buildFineGrainedPatHint(response)}`
+      );
     }
 
     const result = (await response.json()) as GitHubPullResponse;
