@@ -26,6 +26,7 @@ import type {
   NoteChange,
   OpenAISearchResultSet,
   ProposeChangeResult,
+  RenameNoteResult,
   ReadNoteResult,
   ReadNoteExcerptResult,
   ReadSectionResult,
@@ -202,7 +203,7 @@ function slugifyBranchText(value: string): string {
   return slug || "note";
 }
 
-function buildAutoMoveBranchName(sourcePath: string, destinationPath: string): string {
+function buildAutoRelocationBranchName(sourcePath: string, destinationPath: string): string {
   const sourceSlug = slugifyBranchText(path.basename(sourcePath, path.extname(sourcePath)));
   const destinationSlug = slugifyBranchText(
     path.posix.dirname(destinationPath).split("/").slice(-2).join("-")
@@ -714,107 +715,51 @@ export class VaultService {
       path.posix.join(safeDestinationDirectory, path.posix.basename(safeSourcePath))
     );
 
-    if (safeDestinationPath === safeSourcePath) {
-      throw new RefusalError(`Source and destination are identical: ${safeSourcePath}`);
-    }
-
-    const sourceAccess = this.policy.accessForPath(safeSourcePath);
-    if (!sourceAccess.read) {
-      throw new RefusalError(`Read denied by policy: ${safeSourcePath}`);
-    }
-
-    if (!sourceAccess.write) {
-      throw new RefusalError(`Move denied by policy for source path: ${safeSourcePath}`);
-    }
-
-    const destinationAccess = this.policy.accessForPath(safeDestinationPath);
-    if (!destinationAccess.write) {
-      throw new RefusalError(`Move denied by policy for destination path: ${safeDestinationPath}`);
-    }
-
-    const sourceAbsolutePath = resolveVaultPath(this.config.vaultRepoRoot, safeSourcePath);
-    const current = await fs.readFile(sourceAbsolutePath, "utf8").catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") {
-        throw new Error(`Source note does not exist: ${safeSourcePath}`);
-      }
-
-      throw error;
+    return this.relocateNote({
+      safeSourcePath,
+      safeDestinationPath,
+      ...(input.expected_sha256 ? { expected_sha256: input.expected_sha256 } : {}),
+      ...(input.title ? { title: input.title } : {}),
+      ...(input.base_branch ? { base_branch: input.base_branch } : {}),
+      ...(input.branch_name ? { branch_name: input.branch_name } : {}),
+      ...(input.commit_message ? { commit_message: input.commit_message } : {}),
+      ...(input.pr_body ? { pr_body: input.pr_body } : {}),
+      defaultTitle: `Move ${path.posix.basename(safeSourcePath)} to ${safeDestinationDirectory}`,
+      defaultCommitMessage: `ai(vault): move ${path.posix.basename(safeSourcePath)} to ${safeDestinationDirectory}`,
+      defaultPrBody: `Automated note move from ${safeSourcePath} to ${safeDestinationPath}.`
     });
-    const currentSha = sha256(current);
+  }
 
-    if (input.expected_sha256 && input.expected_sha256 !== currentSha) {
-      throw new Error(`expected_sha256 mismatch for ${safeSourcePath}`);
-    }
+  async renameNote(input: {
+    id?: string;
+    path?: string;
+    destination_path: string;
+    expected_sha256?: string;
+    title?: string;
+    base_branch?: string;
+    branch_name?: string;
+    commit_message?: string;
+    pr_body?: string;
+  }): Promise<RenameNoteResult> {
+    const safeSourcePath = this.resolveReadReference({
+      id: input.id,
+      path: input.path
+    });
+    const safeDestinationPath = normalizeVaultPath(input.destination_path);
 
-    const destinationAbsolutePath = resolveVaultPath(this.config.vaultRepoRoot, safeDestinationPath);
-    if (await pathExists(destinationAbsolutePath)) {
-      throw new RefusalError(`Destination note already exists: ${safeDestinationPath}`);
-    }
-
-    const branchName = input.branch_name?.trim()
-      ? ensureBranchName(input.branch_name)
-      : await this.allocateMoveBranchName(safeSourcePath, safeDestinationPath);
-    const sourceName = path.posix.basename(safeSourcePath);
-    const destinationLabel = safeDestinationDirectory;
-    const commitMessage = ensureCommitMessage(
-      input.commit_message?.trim() || `ai(vault): move ${sourceName} to ${destinationLabel}`,
-      extractBranchScope(branchName)
-    );
-    const title = input.title?.trim() || `Move ${sourceName} to ${destinationLabel}`;
-    const prBody =
-      input.pr_body?.trim() || `Automated note move from ${safeSourcePath} to ${safeDestinationPath}.`;
-    const baseBranch = input.base_branch?.trim() || "main";
-    const worktreePath = await this.createWorktree(baseBranch);
-
-    try {
-      await this.git(["checkout", "-b", branchName], { cwd: worktreePath });
-
-      const worktreeSourcePath = resolveVaultPath(worktreePath, safeSourcePath);
-      const worktreeDestinationPath = resolveVaultPath(worktreePath, safeDestinationPath);
-
-      if (!(await pathExists(worktreeSourcePath))) {
-        throw new Error(`Source note does not exist on base branch ${baseBranch}: ${safeSourcePath}`);
-      }
-
-      if (await pathExists(worktreeDestinationPath)) {
-        throw new RefusalError(`Destination note already exists on base branch ${baseBranch}: ${safeDestinationPath}`);
-      }
-
-      await fs.mkdir(path.dirname(worktreeDestinationPath), { recursive: true });
-      await this.git(["mv", safeSourcePath, safeDestinationPath], { cwd: worktreePath });
-      await fs.writeFile(worktreeDestinationPath, current, "utf8");
-      await this.git(["add", safeDestinationPath], { cwd: worktreePath });
-
-      const stagedFiles = await this.git(["diff", "--cached", "--name-only"], { cwd: worktreePath });
-      if (!stagedFiles.trim()) {
-        throw new RefusalError("No file changes were staged. Refusing to create an empty commit.");
-      }
-
-      await this.commit(worktreePath, commitMessage);
-      const commitSha = await this.git(["rev-parse", "HEAD"], { cwd: worktreePath });
-      await this.git(["push", "-u", "origin", branchName], { cwd: worktreePath });
-
-      const pullRequest = await this.github.createPullRequest({
-        title,
-        body: prBody,
-        head: branchName,
-        base: baseBranch,
-        draft: false
-      });
-      const descriptor = this.buildDocumentDescriptor(safeDestinationPath, current);
-
-      return {
-        ...descriptor,
-        previous_path: safeSourcePath,
-        path: safeDestinationPath,
-        sha256: currentSha,
-        branch: branchName,
-        commit_sha: commitSha.trim(),
-        pull_request: pullRequest
-      };
-    } finally {
-      await this.removeWorktree(worktreePath);
-    }
+    return this.relocateNote({
+      safeSourcePath,
+      safeDestinationPath,
+      ...(input.expected_sha256 ? { expected_sha256: input.expected_sha256 } : {}),
+      ...(input.title ? { title: input.title } : {}),
+      ...(input.base_branch ? { base_branch: input.base_branch } : {}),
+      ...(input.branch_name ? { branch_name: input.branch_name } : {}),
+      ...(input.commit_message ? { commit_message: input.commit_message } : {}),
+      ...(input.pr_body ? { pr_body: input.pr_body } : {}),
+      defaultTitle: `Rename ${path.posix.basename(safeSourcePath)} to ${safeDestinationPath}`,
+      defaultCommitMessage: `ai(vault): rename ${path.posix.basename(safeSourcePath)} to ${safeDestinationPath}`,
+      defaultPrBody: `Automated note rename from ${safeSourcePath} to ${safeDestinationPath}.`
+    });
   }
 
   async updateNoteDraft(change: NoteChange): Promise<UpdateDraftResult> {
@@ -1352,9 +1297,122 @@ export class VaultService {
     );
   }
 
-  private async allocateMoveBranchName(sourcePath: string, destinationPath: string): Promise<string> {
+  private async relocateNote(input: {
+    safeSourcePath: string;
+    safeDestinationPath: string;
+    expected_sha256?: string;
+    title?: string;
+    base_branch?: string;
+    branch_name?: string;
+    commit_message?: string;
+    pr_body?: string;
+    defaultTitle: string;
+    defaultCommitMessage: string;
+    defaultPrBody: string;
+  }): Promise<MoveNoteResult> {
+    if (input.safeDestinationPath === input.safeSourcePath) {
+      throw new RefusalError(`Source and destination are identical: ${input.safeSourcePath}`);
+    }
+
+    const sourceAccess = this.policy.accessForPath(input.safeSourcePath);
+    if (!sourceAccess.read) {
+      throw new RefusalError(`Read denied by policy: ${input.safeSourcePath}`);
+    }
+
+    if (!sourceAccess.write) {
+      throw new RefusalError(`Move denied by policy for source path: ${input.safeSourcePath}`);
+    }
+
+    const destinationAccess = this.policy.accessForPath(input.safeDestinationPath);
+    if (!destinationAccess.write) {
+      throw new RefusalError(`Move denied by policy for destination path: ${input.safeDestinationPath}`);
+    }
+
+    const sourceAbsolutePath = resolveVaultPath(this.config.vaultRepoRoot, input.safeSourcePath);
+    const current = await fs.readFile(sourceAbsolutePath, "utf8").catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") {
+        throw new Error(`Source note does not exist: ${input.safeSourcePath}`);
+      }
+
+      throw error;
+    });
+    const currentSha = sha256(current);
+
+    if (input.expected_sha256 && input.expected_sha256 !== currentSha) {
+      throw new Error(`expected_sha256 mismatch for ${input.safeSourcePath}`);
+    }
+
+    const destinationAbsolutePath = resolveVaultPath(this.config.vaultRepoRoot, input.safeDestinationPath);
+    if (await pathExists(destinationAbsolutePath)) {
+      throw new RefusalError(`Destination note already exists: ${input.safeDestinationPath}`);
+    }
+
+    const branchName = input.branch_name?.trim()
+      ? ensureBranchName(input.branch_name)
+      : await this.allocateRelocationBranchName(input.safeSourcePath, input.safeDestinationPath);
+    const commitMessage = ensureCommitMessage(
+      input.commit_message?.trim() || input.defaultCommitMessage,
+      extractBranchScope(branchName)
+    );
+    const title = input.title?.trim() || input.defaultTitle;
+    const prBody = input.pr_body?.trim() || input.defaultPrBody;
+    const baseBranch = input.base_branch?.trim() || "main";
+    const worktreePath = await this.createWorktree(baseBranch);
+
+    try {
+      await this.git(["checkout", "-b", branchName], { cwd: worktreePath });
+
+      const worktreeSourcePath = resolveVaultPath(worktreePath, input.safeSourcePath);
+      const worktreeDestinationPath = resolveVaultPath(worktreePath, input.safeDestinationPath);
+
+      if (!(await pathExists(worktreeSourcePath))) {
+        throw new Error(`Source note does not exist on base branch ${baseBranch}: ${input.safeSourcePath}`);
+      }
+
+      if (await pathExists(worktreeDestinationPath)) {
+        throw new RefusalError(`Destination note already exists on base branch ${baseBranch}: ${input.safeDestinationPath}`);
+      }
+
+      await fs.mkdir(path.dirname(worktreeDestinationPath), { recursive: true });
+      await this.git(["mv", input.safeSourcePath, input.safeDestinationPath], { cwd: worktreePath });
+      await fs.writeFile(worktreeDestinationPath, current, "utf8");
+      await this.git(["add", input.safeDestinationPath], { cwd: worktreePath });
+
+      const stagedFiles = await this.git(["diff", "--cached", "--name-only"], { cwd: worktreePath });
+      if (!stagedFiles.trim()) {
+        throw new RefusalError("No file changes were staged. Refusing to create an empty commit.");
+      }
+
+      await this.commit(worktreePath, commitMessage);
+      const commitSha = await this.git(["rev-parse", "HEAD"], { cwd: worktreePath });
+      await this.git(["push", "-u", "origin", branchName], { cwd: worktreePath });
+
+      const pullRequest = await this.github.createPullRequest({
+        title,
+        body: prBody,
+        head: branchName,
+        base: baseBranch,
+        draft: false
+      });
+      const descriptor = this.buildDocumentDescriptor(input.safeDestinationPath, current);
+
+      return {
+        ...descriptor,
+        previous_path: input.safeSourcePath,
+        path: input.safeDestinationPath,
+        sha256: currentSha,
+        branch: branchName,
+        commit_sha: commitSha.trim(),
+        pull_request: pullRequest
+      };
+    } finally {
+      await this.removeWorktree(worktreePath);
+    }
+  }
+
+  private async allocateRelocationBranchName(sourcePath: string, destinationPath: string): Promise<string> {
     for (let attempt = 0; attempt < 5; attempt += 1) {
-      const branchName = buildAutoMoveBranchName(sourcePath, destinationPath);
+      const branchName = buildAutoRelocationBranchName(sourcePath, destinationPath);
 
       if (!(await this.branchExists(branchName))) {
         return branchName;

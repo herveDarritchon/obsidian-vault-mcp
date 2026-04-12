@@ -123,6 +123,8 @@ const moveNoteOutputSchema = {
   })
 };
 
+const renameNoteOutputSchema = moveNoteOutputSchema;
+
 function toolError(message: string) {
   return {
     content: [{ type: "text" as const, text: message }],
@@ -554,6 +556,91 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           result: isRefusalError(error) ? "refusal" : "error",
           target: target ?? config.defaultTarget,
           paths: roots ?? ["."],
+          error: message
+        });
+        return toolError(message);
+      }
+    }
+  );
+
+  server.registerTool(
+    "rename_note",
+    {
+      title: "Rename an Obsidian note",
+      description:
+        "Renames a note by changing its full path, including optional directory move, through the policy-checked git branch, commit, push, and pull request workflow.",
+      inputSchema: {
+        target: optionalTargetSchema,
+        id: z.string().optional(),
+        path: z.string().optional(),
+        destination_path: z.string(),
+        expected_sha256: z.string().optional(),
+        title: z.string().optional(),
+        base_branch: z.string().default("main"),
+        branch_name: z.string().optional(),
+        commit_message: z.string().optional(),
+        pr_body: z.string().optional()
+      },
+      outputSchema: renameNoteOutputSchema
+    },
+    async ({
+      target,
+      id,
+      path,
+      destination_path,
+      expected_sha256,
+      title,
+      base_branch,
+      branch_name,
+      commit_message,
+      pr_body
+    }) => {
+      const requestId = randomUUID();
+      const reference = id ?? path ?? "<missing>";
+      logEvent("info", "tool_invoked", {
+        requestId,
+        tool: "rename_note",
+        target: target ?? config.defaultTarget,
+        paths: [reference, destination_path],
+        branch: branch_name,
+        baseBranch: base_branch
+      });
+
+      try {
+        const { targetName, service } = resolveTarget(target);
+        const output = await service.renameNote({
+          ...(id ? { id } : {}),
+          ...(path ? { path } : {}),
+          destination_path,
+          ...(expected_sha256 ? { expected_sha256 } : {}),
+          ...(title ? { title } : {}),
+          ...(base_branch ? { base_branch } : {}),
+          ...(branch_name ? { branch_name } : {}),
+          ...(commit_message ? { commit_message } : {}),
+          ...(pr_body ? { pr_body } : {})
+        });
+        logEvent("info", "tool_completed", {
+          requestId,
+          tool: "rename_note",
+          result: "success",
+          target: targetName,
+          paths: [output.previous_path, output.path],
+          branch: output.branch,
+          pullRequest: output.pull_request.url
+        });
+        return withStructuredContent({
+          target: targetName,
+          ...output
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "rename_note failed";
+        logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
+          requestId,
+          tool: "rename_note",
+          result: isRefusalError(error) ? "refusal" : "error",
+          target: target ?? config.defaultTarget,
+          paths: [reference, destination_path],
+          branch: branch_name,
           error: message
         });
         return toolError(message);

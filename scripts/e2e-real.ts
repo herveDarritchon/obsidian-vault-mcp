@@ -467,6 +467,7 @@ async function main() {
         "read_note",
         "read_note_excerpt",
         "read_section",
+        "rename_note",
         "search",
         "search_notes",
         "update_note_draft"

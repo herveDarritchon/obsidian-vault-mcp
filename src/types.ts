@@ -137,3 +137,5 @@ export interface MoveNoteResult extends Record<string, unknown> {
   commit_sha: string;
   pull_request: PullRequestInfo;
 }
+
+export type RenameNoteResult = MoveNoteResult;
