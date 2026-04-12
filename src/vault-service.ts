@@ -39,6 +39,15 @@ interface PreparedChange {
   scopeBucket: string;
 }
 
+interface DocumentDescriptor {
+  id: string;
+  title: string;
+  path: string;
+  url: string;
+}
+
+type BasicSearchResult = Pick<SearchResult, "path" | "snippet" | "score">;
+
 function scoreContent(query: string, content: string): number {
   const lowerQuery = query.toLowerCase();
   const lowerContent = content.toLowerCase();
@@ -287,7 +296,10 @@ export class VaultService {
     const note = await this.readNote(relativePath);
 
     return {
+      id: note.id,
+      title: note.title,
       path: note.path,
+      url: note.url,
       section_heading: sectionHeading.trim(),
       note_sha256: note.sha256,
       content: extractSection(note.content, sectionHeading),
@@ -307,7 +319,10 @@ export class VaultService {
     const excerpt = buildNoteExcerpt(note.content, options);
 
     return {
+      id: note.id,
+      title: note.title,
       path: note.path,
+      url: note.url,
       note_sha256: note.sha256,
       ...excerpt,
       policy: note.policy
@@ -316,14 +331,14 @@ export class VaultService {
 
   async listNotes(root: string | undefined, limit: number): Promise<ListNotesResult> {
     const [resolvedRoot] = await this.resolveSearchRoots(root ? [root] : ["."]);
-    const results: Array<{ path: string }> = [];
+    const results: Array<{ id: string; title: string; path: string; url: string }> = [];
 
     if (resolvedRoot?.stats.isFile()) {
       const relativePath = toVaultRelativePath(this.config.vaultRepoRoot, resolvedRoot.absolutePath);
       const access = this.policy.accessForPath(relativePath);
 
       if (access.read && isMarkdownFile(relativePath)) {
-        results.push({ path: relativePath });
+        results.push(await this.describeDocument(relativePath));
       }
     } else if (resolvedRoot) {
       await this.listDirectory(resolvedRoot.absolutePath, results, limit);
@@ -350,10 +365,12 @@ export class VaultService {
     );
 
     if (ripgrepResults) {
-      return { results: ripgrepResults.slice(0, limit) };
+      return {
+        results: await Promise.all(ripgrepResults.slice(0, limit).map((result) => this.enrichSearchResult(result)))
+      };
     }
 
-    const results: SearchResult[] = [];
+    const results: BasicSearchResult[] = [];
 
     for (const root of requestedRoots) {
       if (root.stats.isFile()) {
@@ -369,7 +386,9 @@ export class VaultService {
     }
 
     results.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
-    return { results: results.slice(0, limit) };
+    return {
+      results: await Promise.all(results.slice(0, limit).map((result) => this.enrichSearchResult(result)))
+    };
   }
 
   async searchOpenAI(query: string, limit: number): Promise<OpenAISearchResultSet> {
@@ -379,11 +398,11 @@ export class VaultService {
         const note = await this.readNote(result.path);
 
         return {
-          id: encodeStableDocumentId(this.config.name, result.path),
-          title: extractNoteTitle(note.content, result.path),
-          path: result.path,
+          id: note.id,
+          title: note.title,
+          path: note.path,
           excerpt: result.snippet,
-          url: this.buildDocumentUrl(result.path),
+          url: note.url,
           text: result.snippet
         };
       })
@@ -410,6 +429,22 @@ export class VaultService {
         source: "obsidian-vault"
       }
     };
+  }
+
+  resolveReadReference(input: { id?: string | undefined; path?: string | undefined }): string {
+    const identifier = input.id?.trim();
+
+    if (identifier) {
+      return this.resolveOpenAIIdentifier(identifier);
+    }
+
+    const pathValue = input.path?.trim();
+
+    if (pathValue) {
+      return normalizeVaultPath(pathValue);
+    }
+
+    throw new RefusalError("Either id or path is required.");
   }
 
   async updateNoteDraft(change: NoteChange): Promise<UpdateDraftResult> {
@@ -587,8 +622,10 @@ export class VaultService {
 
     const absolutePath = resolveVaultPath(root, safePath);
     const content = await fs.readFile(absolutePath, "utf8");
+    const descriptor = this.buildDocumentDescriptor(safePath, content);
 
     return {
+      ...descriptor,
       path: safePath,
       sha256: sha256(content),
       content,
@@ -601,6 +638,21 @@ export class VaultService {
     const encodedPath = encodePathForUrl(relativePath);
 
     return `${webBase}/${this.config.githubOwner}/${this.config.githubRepo}/blob/${encodeURIComponent(this.config.githubDefaultBranch)}/${encodedPath}`;
+  }
+
+  private buildDocumentDescriptor(relativePath: string, content: string): DocumentDescriptor {
+    return {
+      id: encodeStableDocumentId(this.config.name, relativePath),
+      title: extractNoteTitle(content, relativePath),
+      path: relativePath,
+      url: this.buildDocumentUrl(relativePath)
+    };
+  }
+
+  private async describeDocument(relativePath: string): Promise<DocumentDescriptor> {
+    const absolutePath = resolveVaultPath(this.config.vaultRepoRoot, relativePath);
+    const content = await fs.readFile(absolutePath, "utf8");
+    return this.buildDocumentDescriptor(relativePath, content);
   }
 
   private resolveOpenAIIdentifier(identifier: string): string {
@@ -625,10 +677,20 @@ export class VaultService {
     return fromUrl ?? normalizeVaultPath(trimmed);
   }
 
+  private async enrichSearchResult(result: BasicSearchResult): Promise<SearchResult> {
+    const descriptor = await this.describeDocument(result.path);
+
+    return {
+      ...descriptor,
+      snippet: result.snippet,
+      score: result.score
+    };
+  }
+
   private async searchDirectory(
     absoluteRoot: string,
     query: string,
-    results: SearchResult[],
+    results: BasicSearchResult[],
     limit: number
   ): Promise<void> {
     const entries = await fs.readdir(absoluteRoot, { withFileTypes: true });
@@ -660,7 +722,7 @@ export class VaultService {
 
   private async listDirectory(
     absoluteRoot: string,
-    results: Array<{ path: string }>,
+    results: Array<{ id: string; title: string; path: string; url: string }>,
     limit: number
   ): Promise<void> {
     const entries = await fs.readdir(absoluteRoot, { withFileTypes: true });
@@ -692,11 +754,11 @@ export class VaultService {
         continue;
       }
 
-      results.push({ path: relativePath });
+      results.push(await this.describeDocument(relativePath));
     }
   }
 
-  private async searchFile(relativePath: string, query: string, results: SearchResult[]): Promise<void> {
+  private async searchFile(relativePath: string, query: string, results: BasicSearchResult[]): Promise<void> {
     const access = this.policy.accessForPath(relativePath);
 
     if (!access.read) {
@@ -759,7 +821,7 @@ export class VaultService {
   private async searchWithRipgrep(
     absoluteRoots: string[],
     query: string
-  ): Promise<SearchResult[] | null> {
+  ): Promise<BasicSearchResult[] | null> {
     const args = [
       "--json",
       "--fixed-strings",
@@ -797,8 +859,8 @@ export class VaultService {
     }
   }
 
-  private parseRipgrepResults(stdout: string, query: string): SearchResult[] {
-    const aggregated = new Map<string, SearchResult>();
+  private parseRipgrepResults(stdout: string, query: string): BasicSearchResult[] {
+    const aggregated = new Map<string, BasicSearchResult>();
 
     for (const line of stdout.split("\n")) {
       if (!line.trim()) {

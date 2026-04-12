@@ -19,14 +19,20 @@ export interface NoteChange {
 }
 
 export interface ReadNoteResult extends Record<string, unknown> {
+  id: string;
+  title: string;
   path: string;
+  url: string;
   sha256: string;
   content: string;
   policy: PolicyAccess;
 }
 
 export interface ReadSectionResult extends Record<string, unknown> {
+  id: string;
+  title: string;
   path: string;
+  url: string;
   section_heading: string;
   note_sha256: string;
   content: string;
@@ -34,7 +40,10 @@ export interface ReadSectionResult extends Record<string, unknown> {
 }
 
 export interface ReadNoteExcerptResult extends Record<string, unknown> {
+  id: string;
+  title: string;
   path: string;
+  url: string;
   note_sha256: string;
   summary: string;
   excerpt: string;
@@ -43,7 +52,10 @@ export interface ReadNoteExcerptResult extends Record<string, unknown> {
 }
 
 export interface SearchResult {
+  id: string;
+  title: string;
   path: string;
+  url: string;
   snippet: string;
   score: number;
 }
@@ -76,7 +88,10 @@ export interface OpenAIFetchResult extends Record<string, unknown> {
 }
 
 export interface ListNotesItem {
+  id: string;
+  title: string;
   path: string;
+  url: string;
 }
 
 export interface ListNotesResult extends Record<string, unknown> {

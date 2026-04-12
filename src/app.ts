@@ -21,7 +21,10 @@ const policySchemaDefinition = {
 
 const readNoteOutputSchema = {
   target: z.string(),
+  id: z.string(),
+  title: z.string(),
   path: z.string(),
+  url: z.string().url(),
   sha256: z.string(),
   content: z.string(),
   policy: z.object(policySchemaDefinition)
@@ -29,7 +32,10 @@ const readNoteOutputSchema = {
 
 const readSectionOutputSchema = {
   target: z.string(),
+  id: z.string(),
+  title: z.string(),
   path: z.string(),
+  url: z.string().url(),
   section_heading: z.string(),
   note_sha256: z.string(),
   content: z.string(),
@@ -38,7 +44,10 @@ const readSectionOutputSchema = {
 
 const readNoteExcerptOutputSchema = {
   target: z.string(),
+  id: z.string(),
+  title: z.string(),
   path: z.string(),
+  url: z.string().url(),
   note_sha256: z.string(),
   summary: z.string(),
   excerpt: z.string(),
@@ -50,7 +59,10 @@ const searchNotesOutputSchema = {
   target: z.string(),
   results: z.array(
     z.object({
+      id: z.string(),
+      title: z.string(),
       path: z.string(),
+      url: z.string().url(),
       snippet: z.string(),
       score: z.number()
     })
@@ -62,7 +74,10 @@ const listNotesOutputSchema = {
   root: z.string(),
   results: z.array(
     z.object({
-      path: z.string()
+      id: z.string(),
+      title: z.string(),
+      path: z.string(),
+      url: z.string().url()
     })
   )
 };
@@ -148,25 +163,28 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
       description: "Reads a note from the vault after policy checks.",
       inputSchema: {
         target: optionalTargetSchema,
-        path: z.string()
+        id: z.string().optional(),
+        path: z.string().optional()
       },
       outputSchema: readNoteOutputSchema,
       annotations: {
         readOnlyHint: true
       }
     },
-    async ({ target, path }) => {
+    async ({ target, id, path }) => {
       const requestId = randomUUID();
+      const reference = id ?? path ?? "<missing>";
       logEvent("info", "tool_invoked", {
         requestId,
         tool: "read_note",
         target: target ?? config.defaultTarget,
-        paths: [path]
+        paths: [reference]
       });
 
       try {
         const { targetName, service } = resolveTarget(target);
-        const output = await service.readNote(path);
+        const safePath = service.resolveReadReference({ id, path });
+        const output = await service.readNote(safePath);
         logEvent("info", "tool_completed", {
           requestId,
           tool: "read_note",
@@ -185,7 +203,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           tool: "read_note",
           result: isRefusalError(error) ? "refusal" : "error",
           target: target ?? config.defaultTarget,
-          paths: [path],
+          paths: [reference],
           error: message
         });
         return toolError(message);
@@ -200,7 +218,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
       description: "Reads a specific markdown section from a note after policy checks.",
       inputSchema: {
         target: optionalTargetSchema,
-        path: z.string(),
+        id: z.string().optional(),
+        path: z.string().optional(),
         section_heading: z.string()
       },
       outputSchema: readSectionOutputSchema,
@@ -208,19 +227,21 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
         readOnlyHint: true
       }
     },
-    async ({ target, path, section_heading }) => {
+    async ({ target, id, path, section_heading }) => {
       const requestId = randomUUID();
+      const reference = id ?? path ?? "<missing>";
       logEvent("info", "tool_invoked", {
         requestId,
         tool: "read_section",
         target: target ?? config.defaultTarget,
-        paths: [path],
+        paths: [reference],
         sectionHeading: section_heading
       });
 
       try {
         const { targetName, service } = resolveTarget(target);
-        const output = await service.readSection(path, section_heading);
+        const safePath = service.resolveReadReference({ id, path });
+        const output = await service.readSection(safePath, section_heading);
         logEvent("info", "tool_completed", {
           requestId,
           tool: "read_section",
@@ -240,7 +261,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           tool: "read_section",
           result: isRefusalError(error) ? "refusal" : "error",
           target: target ?? config.defaultTarget,
-          paths: [path],
+          paths: [reference],
           sectionHeading: section_heading,
           error: message
         });
@@ -256,7 +277,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
       description: "Reads a compact summary and excerpt from a note after policy checks.",
       inputSchema: {
         target: optionalTargetSchema,
-        path: z.string(),
+        id: z.string().optional(),
+        path: z.string().optional(),
         max_excerpt_chars: z.number().int().min(120).max(4000).default(800),
         max_summary_chars: z.number().int().min(80).max(1000).default(240),
         max_headings: z.number().int().min(0).max(20).default(6)
@@ -266,13 +288,14 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
         readOnlyHint: true
       }
     },
-    async ({ target, path, max_excerpt_chars, max_summary_chars, max_headings }) => {
+    async ({ target, id, path, max_excerpt_chars, max_summary_chars, max_headings }) => {
       const requestId = randomUUID();
+      const reference = id ?? path ?? "<missing>";
       logEvent("info", "tool_invoked", {
         requestId,
         tool: "read_note_excerpt",
         target: target ?? config.defaultTarget,
-        paths: [path],
+        paths: [reference],
         maxExcerptChars: max_excerpt_chars,
         maxSummaryChars: max_summary_chars,
         maxHeadings: max_headings
@@ -280,7 +303,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
 
       try {
         const { targetName, service } = resolveTarget(target);
-        const output = await service.readNoteExcerpt(path, {
+        const safePath = service.resolveReadReference({ id, path });
+        const output = await service.readNoteExcerpt(safePath, {
           maxExcerptChars: max_excerpt_chars,
           maxSummaryChars: max_summary_chars,
           maxHeadings: max_headings
@@ -304,7 +328,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           tool: "read_note_excerpt",
           result: isRefusalError(error) ? "refusal" : "error",
           target: target ?? config.defaultTarget,
-          paths: [path],
+          paths: [reference],
           error: message
         });
         return toolError(message);

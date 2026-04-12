@@ -67,13 +67,36 @@ test("read_note refuses blacklisted paths", async () => {
   );
 });
 
+test("read_note returns stable document metadata alongside content", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const output = await service.readNote("02-Work/TOR2e/specs/community.md");
+
+  assert.match(output.id, /^obsidian-vault:v1:test:[A-Za-z0-9_-]+$/);
+  assert.equal(output.title, "Community");
+  assert.equal(output.path, "02-Work/TOR2e/specs/community.md");
+  assert.equal(
+    output.url,
+    "https://github.com/example/vault/blob/main/02-Work/TOR2e/specs/community.md"
+  );
+  assert.match(output.content, /^# Community/m);
+  assert.ok(output.sha256.length > 0);
+});
+
 test("read_section returns only the requested section content", async () => {
   const vaultRepoRoot = await createVaultFixture();
   const service = await VaultService.create(makeConfig(vaultRepoRoot));
 
   const output = await service.readSection("02-Work/TOR2e/specs/community.md", "## Chronicle tab");
 
+  assert.match(output.id, /^obsidian-vault:v1:test:[A-Za-z0-9_-]+$/);
+  assert.equal(output.title, "Community");
   assert.equal(output.path, "02-Work/TOR2e/specs/community.md");
+  assert.equal(
+    output.url,
+    "https://github.com/example/vault/blob/main/02-Work/TOR2e/specs/community.md"
+  );
   assert.equal(output.section_heading, "## Chronicle tab");
   assert.match(output.content, /^## Chronicle tab/m);
   assert.match(output.content, /Initial content\./);
@@ -101,7 +124,13 @@ test("read_note_excerpt returns a compact summary, excerpt, and headings", async
     maxHeadings: 4
   });
 
+  assert.match(output.id, /^obsidian-vault:v1:test:[A-Za-z0-9_-]+$/);
+  assert.equal(output.title, "Community");
   assert.equal(output.path, "02-Work/TOR2e/specs/community.md");
+  assert.equal(
+    output.url,
+    "https://github.com/example/vault/blob/main/02-Work/TOR2e/specs/community.md"
+  );
   assert.ok(output.note_sha256.length > 0);
   assert.match(output.summary, /Initial content/);
   assert.match(output.excerpt, /Nested detail/);
@@ -142,10 +171,28 @@ test("list_notes returns readable markdown notes under a root and skips denied p
   const output = await service.listNotes("02-Work", 20);
 
   assert.equal(output.root, "02-Work");
-  assert.deepEqual(output.results.map((item) => item.path), [
-    "02-Work/Drafts/launch-post.md",
-    "02-Work/TOR2e/specs/community.md"
-  ]);
+  assert.deepEqual(
+    output.results.map((item) => ({
+      id: item.id,
+      title: item.title,
+      path: item.path,
+      url: item.url
+    })),
+    [
+      {
+        id: "obsidian-vault:v1:test:MDItV29yay9EcmFmdHMvbGF1bmNoLXBvc3QubWQ",
+        title: "Launch post",
+        path: "02-Work/Drafts/launch-post.md",
+        url: "https://github.com/example/vault/blob/main/02-Work/Drafts/launch-post.md"
+      },
+      {
+        id: "obsidian-vault:v1:test:MDItV29yay9UT1IyZS9zcGVjcy9jb21tdW5pdHkubWQ",
+        title: "Community",
+        path: "02-Work/TOR2e/specs/community.md",
+        url: "https://github.com/example/vault/blob/main/02-Work/TOR2e/specs/community.md"
+      }
+    ]
+  );
 });
 
 test("list_notes refuses an explicit blacklisted root", async () => {
@@ -177,6 +224,24 @@ test("searchOpenAI returns OpenAI-compatible document results", async () => {
     output.results[0]?.url,
     "https://github.com/example/vault/blob/main/02-Work/TOR2e/specs/community.md"
   );
+});
+
+test("searchNotes returns id, title, path, and url in addition to snippet and score", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const output = await service.searchNotes("Initial content", undefined, 5);
+
+  assert.equal(output.results.length, 1);
+  assert.match(output.results[0]?.id ?? "", /^obsidian-vault:v1:test:[A-Za-z0-9_-]+$/);
+  assert.equal(output.results[0]?.title, "Community");
+  assert.equal(output.results[0]?.path, "02-Work/TOR2e/specs/community.md");
+  assert.equal(
+    output.results[0]?.url,
+    "https://github.com/example/vault/blob/main/02-Work/TOR2e/specs/community.md"
+  );
+  assert.match(output.results[0]?.snippet ?? "", /Initial content/);
+  assert.equal(typeof output.results[0]?.score, "number");
 });
 
 test("fetchOpenAI returns full note contents and metadata", async () => {
@@ -225,6 +290,22 @@ test("fetchOpenAI accepts a stable document id returned by search", async () => 
 
   assert.equal(output.path, "02-Work/TOR2e/specs/community.md");
   assert.equal(output.id, stableId);
+});
+
+test("resolveReadReference accepts either a stable id or a raw path", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const note = await service.readNote("02-Work/TOR2e/specs/community.md");
+
+  assert.equal(
+    service.resolveReadReference({ id: note.id }),
+    "02-Work/TOR2e/specs/community.md"
+  );
+  assert.equal(
+    service.resolveReadReference({ path: "02-Work/TOR2e/specs/community.md" }),
+    "02-Work/TOR2e/specs/community.md"
+  );
 });
 
 test("propose_change refuses changes spanning multiple scope buckets", async () => {

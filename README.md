@@ -356,6 +356,19 @@ Entrée:
 }
 ```
 
+Ou:
+
+```json
+{
+  "target": "real-vault",
+  "id": "obsidian-vault:v1:real-vault:..."
+}
+```
+
+Retour enrichi:
+
+- `id`, `title`, `path`, `url`, `sha256`, `content`, `policy`
+
 ### `search_notes`
 
 Entrée:
@@ -369,6 +382,10 @@ Entrée:
 }
 ```
 
+Retour enrichi:
+
+- `results[]` avec `id`, `title`, `path`, `url`, `snippet`, `score`
+
 ### `read_section`
 
 Entrée:
@@ -380,6 +397,20 @@ Entrée:
   "section_heading": "## Chronicle tab"
 }
 ```
+
+Ou:
+
+```json
+{
+  "target": "real-vault",
+  "id": "obsidian-vault:v1:real-vault:...",
+  "section_heading": "## Chronicle tab"
+}
+```
+
+Retour enrichi:
+
+- `id`, `title`, `path`, `url`, `section_heading`, `note_sha256`, `content`, `policy`
 
 ### `read_note_excerpt`
 
@@ -395,6 +426,22 @@ Entrée:
 }
 ```
 
+Ou:
+
+```json
+{
+  "target": "real-vault",
+  "id": "obsidian-vault:v1:real-vault:...",
+  "max_summary_chars": 240,
+  "max_excerpt_chars": 800,
+  "max_headings": 6
+}
+```
+
+Retour enrichi:
+
+- `id`, `title`, `path`, `url`, `note_sha256`, `summary`, `excerpt`, `headings`, `policy`
+
 ### `list_notes`
 
 Entrée:
@@ -406,6 +453,10 @@ Entrée:
   "limit": 50
 }
 ```
+
+Retour enrichi:
+
+- `results[]` avec `id`, `title`, `path`, `url`
 
 ### `update_note_draft`
 
