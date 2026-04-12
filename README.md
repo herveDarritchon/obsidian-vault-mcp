@@ -5,7 +5,7 @@ Serveur MCP distant minimal pour un vault Obsidian, avec policy côté serveur e
 ## Ce que fait cette V1
 
 - expose un endpoint MCP distant en Streamable HTTP sur `POST /mcp`
-- fournit exactement 4 tools: `read_note`, `search_notes`, `update_note_draft`, `propose_change`
+- fournit 5 tools: `list_notes`, `read_note`, `search_notes`, `update_note_draft`, `propose_change`
 - charge une policy YAML et bloque les chemins interdits côté serveur
 - ouvre une PR GitHub après écriture dans un worktree git temporaire, pour éviter de salir le clone principal du vault
 - laisse `update_note_draft` sans effet de bord et réserve `propose_change` au flux d’écriture
@@ -313,6 +313,18 @@ Entrée:
   "query": "Chronicle tab",
   "roots": ["02-Work/TOR2e/specs"],
   "limit": 10
+}
+```
+
+### `list_notes`
+
+Entrée:
+
+```json
+{
+  "target": "real-vault",
+  "root": "02-Work/TOR2e/working",
+  "limit": 50
 }
 ```
 

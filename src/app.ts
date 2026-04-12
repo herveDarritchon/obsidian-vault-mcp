@@ -38,6 +38,16 @@ const searchNotesOutputSchema = {
   )
 };
 
+const listNotesOutputSchema = {
+  target: z.string(),
+  root: z.string(),
+  results: z.array(
+    z.object({
+      path: z.string()
+    })
+  )
+};
+
 const updateDraftOutputSchema = {
   target: z.string(),
   path: z.string(),
@@ -151,6 +161,61 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           result: isRefusalError(error) ? "refusal" : "error",
           target: target ?? config.defaultTarget,
           paths: [path],
+          error: message
+        });
+        return toolError(message);
+      }
+    }
+  );
+
+  server.registerTool(
+    "list_notes",
+    {
+      title: "List vault notes",
+      description: "Lists readable markdown notes under a root to help navigate the vault.",
+      inputSchema: {
+        target: optionalTargetSchema,
+        root: z.string().optional(),
+        limit: z.number().int().min(1).max(200).default(50)
+      },
+      outputSchema: listNotesOutputSchema,
+      annotations: {
+        readOnlyHint: true
+      }
+    },
+    async ({ target, root, limit }) => {
+      const requestId = randomUUID();
+      logEvent("info", "tool_invoked", {
+        requestId,
+        tool: "list_notes",
+        target: target ?? config.defaultTarget,
+        paths: [root ?? "."],
+        limit
+      });
+
+      try {
+        const { targetName, service } = resolveTarget(target);
+        const output = await service.listNotes(root, limit);
+        logEvent("info", "tool_completed", {
+          requestId,
+          tool: "list_notes",
+          result: "success",
+          target: targetName,
+          paths: [output.root],
+          resultCount: output.results.length
+        });
+        return withStructuredContent({
+          target: targetName,
+          ...output
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "list_notes failed";
+        logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
+          requestId,
+          tool: "list_notes",
+          result: isRefusalError(error) ? "refusal" : "error",
+          target: target ?? config.defaultTarget,
+          paths: [root ?? "."],
           error: message
         });
         return toolError(message);

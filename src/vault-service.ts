@@ -12,6 +12,7 @@ import { normalizeVaultPath, resolveVaultPath, toVaultRelativePath } from "./lib
 import { applyChange, buildDiffSummary } from "./markdown.js";
 import { VaultPolicyEngine } from "./policy.js";
 import type {
+  ListNotesResult,
   NoteChange,
   ProposeChangeResult,
   ReadNoteResult,
@@ -180,6 +181,28 @@ export class VaultService {
 
   readNote(relativePath: string): Promise<ReadNoteResult> {
     return this.readNoteFromRoot(this.config.vaultRepoRoot, relativePath);
+  }
+
+  async listNotes(root: string | undefined, limit: number): Promise<ListNotesResult> {
+    const [resolvedRoot] = await this.resolveSearchRoots(root ? [root] : ["."]);
+    const results: Array<{ path: string }> = [];
+
+    if (resolvedRoot?.stats.isFile()) {
+      const relativePath = toVaultRelativePath(this.config.vaultRepoRoot, resolvedRoot.absolutePath);
+      const access = this.policy.accessForPath(relativePath);
+
+      if (access.read && isMarkdownFile(relativePath)) {
+        results.push({ path: relativePath });
+      }
+    } else if (resolvedRoot) {
+      await this.listDirectory(resolvedRoot.absolutePath, results, limit);
+    }
+
+    results.sort((left, right) => left.path.localeCompare(right.path));
+    return {
+      root: resolvedRoot?.safeRoot ?? ".",
+      results: results.slice(0, limit)
+    };
   }
 
   async searchNotes(query: string, roots: string[] | undefined, limit: number): Promise<SearchNotesResult> {
@@ -432,6 +455,44 @@ export class VaultService {
 
       const relativePath = toVaultRelativePath(this.config.vaultRepoRoot, absolutePath);
       await this.searchFile(relativePath, query, results);
+    }
+  }
+
+  private async listDirectory(
+    absoluteRoot: string,
+    results: Array<{ path: string }>,
+    limit: number
+  ): Promise<void> {
+    const entries = await fs.readdir(absoluteRoot, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (results.length >= limit) {
+        return;
+      }
+
+      if (IGNORED_DIRECTORIES.has(entry.name)) {
+        continue;
+      }
+
+      const absolutePath = path.join(absoluteRoot, entry.name);
+
+      if (entry.isDirectory()) {
+        await this.listDirectory(absolutePath, results, limit);
+        continue;
+      }
+
+      if (!entry.isFile() || !isMarkdownFile(entry.name)) {
+        continue;
+      }
+
+      const relativePath = toVaultRelativePath(this.config.vaultRepoRoot, absolutePath);
+      const access = this.policy.accessForPath(relativePath);
+
+      if (!access.read) {
+        continue;
+      }
+
+      results.push({ path: relativePath });
     }
   }
 

@@ -35,6 +35,15 @@ export interface SearchNotesResult extends Record<string, unknown> {
   results: SearchResult[];
 }
 
+export interface ListNotesItem {
+  path: string;
+}
+
+export interface ListNotesResult extends Record<string, unknown> {
+  root: string;
+  results: ListNotesItem[];
+}
+
 export interface DraftDiffSummary {
   changed_sections: string[];
   line_delta: number;

@@ -429,7 +429,7 @@ async function main() {
 
     assert.deepEqual(
       tools.tools.map((tool) => tool.name).sort(),
-      ["propose_change", "read_note", "search_notes", "update_note_draft"]
+      ["list_notes", "propose_change", "read_note", "search_notes", "update_note_draft"]
     );
 
     const readResult = await runStep(

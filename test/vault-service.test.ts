@@ -76,6 +76,29 @@ test("search_notes refuses an explicit blacklisted root", async () => {
   );
 });
 
+test("list_notes returns readable markdown notes under a root and skips denied paths", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const output = await service.listNotes("02-Work", 20);
+
+  assert.equal(output.root, "02-Work");
+  assert.deepEqual(output.results.map((item) => item.path), [
+    "02-Work/Drafts/launch-post.md",
+    "02-Work/TOR2e/specs/community.md"
+  ]);
+});
+
+test("list_notes refuses an explicit blacklisted root", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  await assert.rejects(
+    () => service.listNotes("Secrets", 10),
+    (error: unknown) => error instanceof RefusalError && /Search denied by policy/.test(error.message)
+  );
+});
+
 test("propose_change refuses changes spanning multiple scope buckets", async () => {
   const vaultRepoRoot = await createVaultFixture();
   const service = await VaultService.create(makeConfig(vaultRepoRoot));
