@@ -125,3 +125,15 @@ export interface ProposeChangeResult extends Record<string, unknown> {
   pull_request: PullRequestInfo;
   changed_files: string[];
 }
+
+export interface MoveNoteResult extends Record<string, unknown> {
+  id: string;
+  title: string;
+  previous_path: string;
+  path: string;
+  url: string;
+  sha256: string;
+  branch: string;
+  commit_sha: string;
+  pull_request: PullRequestInfo;
+}

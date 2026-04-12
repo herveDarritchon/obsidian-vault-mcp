@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 
 import type { VaultTargetConfig } from "./config.js";
@@ -21,6 +22,7 @@ import { VaultPolicyEngine } from "./policy.js";
 import type {
   OpenAIFetchResult,
   ListNotesResult,
+  MoveNoteResult,
   NoteChange,
   OpenAISearchResultSet,
   ProposeChangeResult,
@@ -113,6 +115,19 @@ function countLines(content: string): number {
   return content === "" ? 0 : content.split(/\r?\n/).length;
 }
 
+async function pathExists(absolutePath: string): Promise<boolean> {
+  try {
+    await fs.stat(absolutePath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return false;
+    }
+
+    throw error;
+  }
+}
+
 function deriveScopeBucket(relativePath: string): string {
   const segments = normalizeVaultPath(relativePath).split("/");
   const directorySegments = segments.slice(0, -1);
@@ -173,6 +188,27 @@ function ensureCommitMessage(commitMessage: string, expectedScope: string): stri
   }
 
   return trimmed;
+}
+
+function slugifyBranchText(value: string): string {
+  const slug = value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+  return slug || "note";
+}
+
+function buildAutoMoveBranchName(sourcePath: string, destinationPath: string): string {
+  const sourceSlug = slugifyBranchText(path.basename(sourcePath, path.extname(sourcePath)));
+  const destinationSlug = slugifyBranchText(
+    path.posix.dirname(destinationPath).split("/").slice(-2).join("-")
+  );
+  const suffix = randomUUID().slice(0, 8);
+  return `ai/vault/move-${sourceSlug}-to-${destinationSlug}-${suffix}`;
 }
 
 function buildPullRequestBody(prBody: string, changedFiles: string[]): string {
@@ -656,6 +692,129 @@ export class VaultService {
     }
 
     throw new RefusalError("Either id or path is required.");
+  }
+
+  async moveNote(input: {
+    id?: string;
+    path?: string;
+    destination_dir: string;
+    expected_sha256?: string;
+    title?: string;
+    base_branch?: string;
+    branch_name?: string;
+    commit_message?: string;
+    pr_body?: string;
+  }): Promise<MoveNoteResult> {
+    const safeSourcePath = this.resolveReadReference({
+      id: input.id,
+      path: input.path
+    });
+    const safeDestinationDirectory = normalizeVaultPath(input.destination_dir);
+    const safeDestinationPath = normalizeVaultPath(
+      path.posix.join(safeDestinationDirectory, path.posix.basename(safeSourcePath))
+    );
+
+    if (safeDestinationPath === safeSourcePath) {
+      throw new RefusalError(`Source and destination are identical: ${safeSourcePath}`);
+    }
+
+    const sourceAccess = this.policy.accessForPath(safeSourcePath);
+    if (!sourceAccess.read) {
+      throw new RefusalError(`Read denied by policy: ${safeSourcePath}`);
+    }
+
+    if (!sourceAccess.write) {
+      throw new RefusalError(`Move denied by policy for source path: ${safeSourcePath}`);
+    }
+
+    const destinationAccess = this.policy.accessForPath(safeDestinationPath);
+    if (!destinationAccess.write) {
+      throw new RefusalError(`Move denied by policy for destination path: ${safeDestinationPath}`);
+    }
+
+    const sourceAbsolutePath = resolveVaultPath(this.config.vaultRepoRoot, safeSourcePath);
+    const current = await fs.readFile(sourceAbsolutePath, "utf8").catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") {
+        throw new Error(`Source note does not exist: ${safeSourcePath}`);
+      }
+
+      throw error;
+    });
+    const currentSha = sha256(current);
+
+    if (input.expected_sha256 && input.expected_sha256 !== currentSha) {
+      throw new Error(`expected_sha256 mismatch for ${safeSourcePath}`);
+    }
+
+    const destinationAbsolutePath = resolveVaultPath(this.config.vaultRepoRoot, safeDestinationPath);
+    if (await pathExists(destinationAbsolutePath)) {
+      throw new RefusalError(`Destination note already exists: ${safeDestinationPath}`);
+    }
+
+    const branchName = input.branch_name?.trim()
+      ? ensureBranchName(input.branch_name)
+      : await this.allocateMoveBranchName(safeSourcePath, safeDestinationPath);
+    const sourceName = path.posix.basename(safeSourcePath);
+    const destinationLabel = safeDestinationDirectory;
+    const commitMessage = ensureCommitMessage(
+      input.commit_message?.trim() || `ai(vault): move ${sourceName} to ${destinationLabel}`,
+      extractBranchScope(branchName)
+    );
+    const title = input.title?.trim() || `Move ${sourceName} to ${destinationLabel}`;
+    const prBody =
+      input.pr_body?.trim() || `Automated note move from ${safeSourcePath} to ${safeDestinationPath}.`;
+    const baseBranch = input.base_branch?.trim() || "main";
+    const worktreePath = await this.createWorktree(baseBranch);
+
+    try {
+      await this.git(["checkout", "-b", branchName], { cwd: worktreePath });
+
+      const worktreeSourcePath = resolveVaultPath(worktreePath, safeSourcePath);
+      const worktreeDestinationPath = resolveVaultPath(worktreePath, safeDestinationPath);
+
+      if (!(await pathExists(worktreeSourcePath))) {
+        throw new Error(`Source note does not exist on base branch ${baseBranch}: ${safeSourcePath}`);
+      }
+
+      if (await pathExists(worktreeDestinationPath)) {
+        throw new RefusalError(`Destination note already exists on base branch ${baseBranch}: ${safeDestinationPath}`);
+      }
+
+      await fs.mkdir(path.dirname(worktreeDestinationPath), { recursive: true });
+      await this.git(["mv", safeSourcePath, safeDestinationPath], { cwd: worktreePath });
+      await fs.writeFile(worktreeDestinationPath, current, "utf8");
+      await this.git(["add", safeDestinationPath], { cwd: worktreePath });
+
+      const stagedFiles = await this.git(["diff", "--cached", "--name-only"], { cwd: worktreePath });
+      if (!stagedFiles.trim()) {
+        throw new RefusalError("No file changes were staged. Refusing to create an empty commit.");
+      }
+
+      await this.commit(worktreePath, commitMessage);
+      const commitSha = await this.git(["rev-parse", "HEAD"], { cwd: worktreePath });
+      await this.git(["push", "-u", "origin", branchName], { cwd: worktreePath });
+
+      const pullRequest = await this.github.createPullRequest({
+        title,
+        body: prBody,
+        head: branchName,
+        base: baseBranch,
+        draft: false
+      });
+      const descriptor = this.buildDocumentDescriptor(safeDestinationPath, current);
+
+      return {
+        ...descriptor,
+        previous_path: safeSourcePath,
+        path: safeDestinationPath,
+        sha256: currentSha,
+        branch: branchName,
+        commit_sha: commitSha.trim(),
+        pull_request: pullRequest
+      };
+    } finally {
+      await this.removeWorktree(worktreePath);
+    }
   }
 
   async updateNoteDraft(change: NoteChange): Promise<UpdateDraftResult> {
@@ -1190,6 +1349,20 @@ export class VaultService {
 
     return Array.from(aggregated.values()).sort(
       (left, right) => right.score - left.score || left.path.localeCompare(right.path)
+    );
+  }
+
+  private async allocateMoveBranchName(sourcePath: string, destinationPath: string): Promise<string> {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const branchName = buildAutoMoveBranchName(sourcePath, destinationPath);
+
+      if (!(await this.branchExists(branchName))) {
+        return branchName;
+      }
+    }
+
+    throw new RefusalError(
+      `Unable to allocate a unique branch name for move ${sourcePath} -> ${destinationPath}`
     );
   }
 

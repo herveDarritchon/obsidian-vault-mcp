@@ -107,6 +107,22 @@ const proposeChangeOutputSchema = {
   changed_files: z.array(z.string())
 };
 
+const moveNoteOutputSchema = {
+  target: z.string(),
+  id: z.string(),
+  title: z.string(),
+  previous_path: z.string(),
+  path: z.string(),
+  url: z.string().url(),
+  sha256: z.string(),
+  branch: z.string(),
+  commit_sha: z.string(),
+  pull_request: z.object({
+    number: z.number().int(),
+    url: z.string().url()
+  })
+};
+
 function toolError(message: string) {
   return {
     content: [{ type: "text" as const, text: message }],
@@ -538,6 +554,91 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           result: isRefusalError(error) ? "refusal" : "error",
           target: target ?? config.defaultTarget,
           paths: roots ?? ["."],
+          error: message
+        });
+        return toolError(message);
+      }
+    }
+  );
+
+  server.registerTool(
+    "move_note",
+    {
+      title: "Move an Obsidian note",
+      description:
+        "Moves a note to another directory through the policy-checked git branch, commit, push, and pull request workflow.",
+      inputSchema: {
+        target: optionalTargetSchema,
+        id: z.string().optional(),
+        path: z.string().optional(),
+        destination_dir: z.string(),
+        expected_sha256: z.string().optional(),
+        title: z.string().optional(),
+        base_branch: z.string().default("main"),
+        branch_name: z.string().optional(),
+        commit_message: z.string().optional(),
+        pr_body: z.string().optional()
+      },
+      outputSchema: moveNoteOutputSchema
+    },
+    async ({
+      target,
+      id,
+      path,
+      destination_dir,
+      expected_sha256,
+      title,
+      base_branch,
+      branch_name,
+      commit_message,
+      pr_body
+    }) => {
+      const requestId = randomUUID();
+      const reference = id ?? path ?? "<missing>";
+      logEvent("info", "tool_invoked", {
+        requestId,
+        tool: "move_note",
+        target: target ?? config.defaultTarget,
+        paths: [reference, destination_dir],
+        branch: branch_name,
+        baseBranch: base_branch
+      });
+
+      try {
+        const { targetName, service } = resolveTarget(target);
+        const output = await service.moveNote({
+          ...(id ? { id } : {}),
+          ...(path ? { path } : {}),
+          destination_dir,
+          ...(expected_sha256 ? { expected_sha256 } : {}),
+          ...(title ? { title } : {}),
+          ...(base_branch ? { base_branch } : {}),
+          ...(branch_name ? { branch_name } : {}),
+          ...(commit_message ? { commit_message } : {}),
+          ...(pr_body ? { pr_body } : {})
+        });
+        logEvent("info", "tool_completed", {
+          requestId,
+          tool: "move_note",
+          result: "success",
+          target: targetName,
+          paths: [output.previous_path, output.path],
+          branch: output.branch,
+          pullRequest: output.pull_request.url
+        });
+        return withStructuredContent({
+          target: targetName,
+          ...output
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "move_note failed";
+        logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
+          requestId,
+          tool: "move_note",
+          result: isRefusalError(error) ? "refusal" : "error",
+          target: target ?? config.defaultTarget,
+          paths: [reference, destination_dir],
+          branch: branch_name,
           error: message
         });
         return toolError(message);

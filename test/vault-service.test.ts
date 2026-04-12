@@ -412,6 +412,54 @@ test("resolveReadReference accepts either a stable id or a raw path", async () =
   );
 });
 
+test("move_note refuses moving a note into the same directory", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  await assert.rejects(
+    () =>
+      service.moveNote({
+        path: "02-Work/TOR2e/specs/community.md",
+        destination_dir: "02-Work/TOR2e/specs"
+      }),
+    (error: unknown) => error instanceof RefusalError && /identical/.test(error.message)
+  );
+});
+
+test("move_note refuses a destination outside write-enabled policy", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  await assert.rejects(
+    () =>
+      service.moveNote({
+        path: "02-Work/TOR2e/specs/community.md",
+        destination_dir: "03-Knowledge/Concepts"
+      }),
+    (error: unknown) =>
+      error instanceof RefusalError && /destination path/.test(error.message)
+  );
+});
+
+test("move_note refuses when the destination note already exists", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  await fs.writeFile(
+    path.join(vaultRepoRoot, "02-Work/Drafts/community.md"),
+    "# Existing community\n",
+    "utf8"
+  );
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  await assert.rejects(
+    () =>
+      service.moveNote({
+        path: "02-Work/TOR2e/specs/community.md",
+        destination_dir: "02-Work/Drafts"
+      }),
+    (error: unknown) => error instanceof RefusalError && /already exists/.test(error.message)
+  );
+});
+
 test("propose_change refuses changes spanning multiple scope buckets", async () => {
   const vaultRepoRoot = await createVaultFixture();
   const service = await VaultService.create(makeConfig(vaultRepoRoot));

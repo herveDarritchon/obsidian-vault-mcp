@@ -459,7 +459,18 @@ async function main() {
 
     assert.deepEqual(
       tools.tools.map((tool) => tool.name).sort(),
-      ["fetch", "list_notes", "propose_change", "read_note", "read_note_excerpt", "read_section", "search", "search_notes", "update_note_draft"]
+      [
+        "fetch",
+        "list_notes",
+        "move_note",
+        "propose_change",
+        "read_note",
+        "read_note_excerpt",
+        "read_section",
+        "search",
+        "search_notes",
+        "update_note_draft"
+      ]
     );
 
     const readResult = await runStep(

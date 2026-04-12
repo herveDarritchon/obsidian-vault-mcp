@@ -5,10 +5,10 @@ Serveur MCP distant minimal pour un vault Obsidian, avec policy côté serveur e
 ## Ce que fait cette V1
 
 - expose un endpoint MCP distant en Streamable HTTP sur `POST /mcp`
-- fournit 9 tools: `search`, `fetch`, `list_notes`, `read_note`, `read_note_excerpt`, `read_section`, `search_notes`, `update_note_draft`, `propose_change`
+- fournit 10 tools: `search`, `fetch`, `list_notes`, `read_note`, `read_note_excerpt`, `read_section`, `search_notes`, `move_note`, `update_note_draft`, `propose_change`
 - charge une policy YAML et bloque les chemins interdits côté serveur
 - ouvre une PR GitHub après écriture dans un worktree git temporaire, pour éviter de salir le clone principal du vault
-- laisse `update_note_draft` sans effet de bord et réserve `propose_change` au flux d’écriture
+- laisse `update_note_draft` sans effet de bord et réserve `move_note` et `propose_change` au flux d’écriture via PR
 
 ## Prérequis
 
@@ -151,7 +151,7 @@ targets:
 
 ### Comment cibler un repo précis
 
-Les 7 tools “vault natifs” acceptent maintenant un champ optionnel `target`.
+Les 8 tools “vault natifs” acceptent maintenant un champ optionnel `target`.
 
 Les tools OpenAI-compatibles `search` et `fetch` restent volontairement mono-cible côté appel: ils utilisent la target par défaut du serveur pour rester alignés avec les workflows ChatGPT/OpenAI qui attendent une source documentaire unique.
 
@@ -476,6 +476,39 @@ Entrée:
   "expected_sha256": "..."
 }
 ```
+
+### `move_note`
+
+Entrée:
+
+```json
+{
+  "target": "real-vault",
+  "path": "02-Work/TOR2e/specs/community.md",
+  "destination_dir": "02-Work/Drafts",
+  "expected_sha256": "...",
+  "base_branch": "main"
+}
+```
+
+Ou:
+
+```json
+{
+  "target": "real-vault",
+  "id": "obsidian-vault:v1:real-vault:...",
+  "destination_dir": "02-Work/Drafts"
+}
+```
+
+Retour enrichi:
+
+- `id`, `title`, `previous_path`, `path`, `url`, `sha256`, `branch`, `commit_sha`, `pull_request`
+- conserve le nom du fichier et déplace la note vers `destination_dir`
+- vérifie la policy sur le chemin source et le chemin de destination
+- ouvre une PR dédiée au déplacement
+- refuse si la note de destination existe déjà
+- refuse si la note n’existe pas sur la `base_branch` choisie
 
 ### `propose_change`
 
