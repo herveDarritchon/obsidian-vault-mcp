@@ -460,6 +460,7 @@ async function main() {
     assert.deepEqual(
       tools.tools.map((tool) => tool.name).sort(),
       [
+        "create_folder",
         "fetch",
         "list_notes",
         "move_note",

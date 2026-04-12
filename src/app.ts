@@ -125,6 +125,19 @@ const moveNoteOutputSchema = {
 
 const renameNoteOutputSchema = moveNoteOutputSchema;
 
+const createFolderOutputSchema = {
+  target: z.string(),
+  path: z.string(),
+  placeholder_path: z.string(),
+  url: z.string().url(),
+  branch: z.string(),
+  commit_sha: z.string(),
+  pull_request: z.object({
+    number: z.number().int(),
+    url: z.string().url()
+  })
+};
+
 function toolError(message: string) {
   return {
     content: [{ type: "text" as const, text: message }],
@@ -556,6 +569,73 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           result: isRefusalError(error) ? "refusal" : "error",
           target: target ?? config.defaultTarget,
           paths: roots ?? ["."],
+          error: message
+        });
+        return toolError(message);
+      }
+    }
+  );
+
+  server.registerTool(
+    "create_folder",
+    {
+      title: "Create an Obsidian folder",
+      description:
+        "Creates a folder in the vault through the policy-checked git branch, commit, push, and pull request workflow.",
+      inputSchema: {
+        target: optionalTargetSchema,
+        path: z.string(),
+        title: z.string().optional(),
+        base_branch: z.string().default("main"),
+        branch_name: z.string().optional(),
+        commit_message: z.string().optional(),
+        pr_body: z.string().optional()
+      },
+      outputSchema: createFolderOutputSchema
+    },
+    async ({ target, path, title, base_branch, branch_name, commit_message, pr_body }) => {
+      const requestId = randomUUID();
+      logEvent("info", "tool_invoked", {
+        requestId,
+        tool: "create_folder",
+        target: target ?? config.defaultTarget,
+        paths: [path],
+        branch: branch_name,
+        baseBranch: base_branch
+      });
+
+      try {
+        const { targetName, service } = resolveTarget(target);
+        const output = await service.createFolder({
+          path,
+          ...(title ? { title } : {}),
+          ...(base_branch ? { base_branch } : {}),
+          ...(branch_name ? { branch_name } : {}),
+          ...(commit_message ? { commit_message } : {}),
+          ...(pr_body ? { pr_body } : {})
+        });
+        logEvent("info", "tool_completed", {
+          requestId,
+          tool: "create_folder",
+          result: "success",
+          target: targetName,
+          paths: [output.path, output.placeholder_path],
+          branch: output.branch,
+          pullRequest: output.pull_request.url
+        });
+        return withStructuredContent({
+          target: targetName,
+          ...output
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "create_folder failed";
+        logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
+          requestId,
+          tool: "create_folder",
+          result: isRefusalError(error) ? "refusal" : "error",
+          target: target ?? config.defaultTarget,
+          paths: [path],
+          branch: branch_name,
           error: message
         });
         return toolError(message);

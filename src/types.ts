@@ -139,3 +139,12 @@ export interface MoveNoteResult extends Record<string, unknown> {
 }
 
 export type RenameNoteResult = MoveNoteResult;
+
+export interface CreateFolderResult extends Record<string, unknown> {
+  path: string;
+  placeholder_path: string;
+  url: string;
+  branch: string;
+  commit_sha: string;
+  pull_request: PullRequestInfo;
+}

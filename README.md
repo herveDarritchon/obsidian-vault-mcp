@@ -5,10 +5,10 @@ Serveur MCP distant minimal pour un vault Obsidian, avec policy côté serveur e
 ## Ce que fait cette V1
 
 - expose un endpoint MCP distant en Streamable HTTP sur `POST /mcp`
-- fournit 11 tools: `search`, `fetch`, `list_notes`, `read_note`, `read_note_excerpt`, `read_section`, `search_notes`, `rename_note`, `move_note`, `update_note_draft`, `propose_change`
+- fournit 12 tools: `search`, `fetch`, `list_notes`, `read_note`, `read_note_excerpt`, `read_section`, `search_notes`, `create_folder`, `rename_note`, `move_note`, `update_note_draft`, `propose_change`
 - charge une policy YAML et bloque les chemins interdits côté serveur
 - ouvre une PR GitHub après écriture dans un worktree git temporaire, pour éviter de salir le clone principal du vault
-- laisse `update_note_draft` sans effet de bord et réserve `rename_note`, `move_note` et `propose_change` au flux d’écriture via PR
+- laisse `update_note_draft` sans effet de bord et réserve `create_folder`, `rename_note`, `move_note` et `propose_change` au flux d’écriture via PR
 
 ## Prérequis
 
@@ -151,7 +151,7 @@ targets:
 
 ### Comment cibler un repo précis
 
-Les 9 tools “vault natifs” acceptent maintenant un champ optionnel `target`.
+Les 10 tools “vault natifs” acceptent maintenant un champ optionnel `target`.
 
 Les tools OpenAI-compatibles `search` et `fetch` restent volontairement mono-cible côté appel: ils utilisent la target par défaut du serveur pour rester alignés avec les workflows ChatGPT/OpenAI qui attendent une source documentaire unique.
 
@@ -509,6 +509,26 @@ Retour enrichi:
 - ouvre une PR dédiée au déplacement
 - refuse si la note de destination existe déjà
 - refuse si la note n’existe pas sur la `base_branch` choisie
+
+### `create_folder`
+
+Entrée:
+
+```json
+{
+  "target": "real-vault",
+  "path": "02-Work/TOR2e/new-space",
+  "base_branch": "main"
+}
+```
+
+Retour enrichi:
+
+- `path`, `placeholder_path`, `url`, `branch`, `commit_sha`, `pull_request`
+- crée le répertoire demandé via un fichier de maintien `.gitkeep`
+- vérifie la policy sur le chemin du placeholder
+- ouvre une PR dédiée à la création
+- refuse si le répertoire existe déjà
 
 ### `rename_note`
 

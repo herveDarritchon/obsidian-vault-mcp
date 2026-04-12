@@ -508,6 +508,33 @@ test("rename_note refuses when the destination path already exists", async () =>
   );
 });
 
+test("create_folder refuses a path outside write-enabled policy", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  await assert.rejects(
+    () =>
+      service.createFolder({
+        path: "03-Knowledge/Concepts/New Folder"
+      }),
+    (error: unknown) => error instanceof RefusalError && /Create folder denied by policy/.test(error.message)
+  );
+});
+
+test("create_folder refuses when the folder already exists", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  await fs.mkdir(path.join(vaultRepoRoot, "02-Work/Drafts/Existing Folder"), { recursive: true });
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  await assert.rejects(
+    () =>
+      service.createFolder({
+        path: "02-Work/Drafts/Existing Folder"
+      }),
+    (error: unknown) => error instanceof RefusalError && /Folder already exists/.test(error.message)
+  );
+});
+
 test("propose_change refuses changes spanning multiple scope buckets", async () => {
   const vaultRepoRoot = await createVaultFixture();
   const service = await VaultService.create(makeConfig(vaultRepoRoot));

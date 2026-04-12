@@ -20,6 +20,7 @@ import {
 } from "./markdown.js";
 import { VaultPolicyEngine } from "./policy.js";
 import type {
+  CreateFolderResult,
   OpenAIFetchResult,
   ListNotesResult,
   MoveNoteResult,
@@ -210,6 +211,12 @@ function buildAutoRelocationBranchName(sourcePath: string, destinationPath: stri
   );
   const suffix = randomUUID().slice(0, 8);
   return `ai/vault/move-${sourceSlug}-to-${destinationSlug}-${suffix}`;
+}
+
+function buildAutoFolderBranchName(folderPath: string): string {
+  const folderSlug = slugifyBranchText(folderPath.split("/").slice(-2).join("-"));
+  const suffix = randomUUID().slice(0, 8);
+  return `ai/vault/create-folder-${folderSlug}-${suffix}`;
 }
 
 function buildPullRequestBody(prBody: string, changedFiles: string[]): string {
@@ -762,6 +769,85 @@ export class VaultService {
     });
   }
 
+  async createFolder(input: {
+    path: string;
+    title?: string;
+    base_branch?: string;
+    branch_name?: string;
+    commit_message?: string;
+    pr_body?: string;
+  }): Promise<CreateFolderResult> {
+    const safeFolderPath = normalizeVaultPath(input.path);
+    const placeholderPath = normalizeVaultPath(path.posix.join(safeFolderPath, ".gitkeep"));
+    const access = this.policy.accessForPath(placeholderPath);
+
+    if (!access.write) {
+      throw new RefusalError(`Create folder denied by policy: ${safeFolderPath}`);
+    }
+
+    const absoluteFolderPath = resolveVaultPath(this.config.vaultRepoRoot, safeFolderPath);
+    if (await pathExists(absoluteFolderPath)) {
+      throw new RefusalError(`Folder already exists: ${safeFolderPath}`);
+    }
+
+    const branchName = input.branch_name?.trim()
+      ? ensureBranchName(input.branch_name)
+      : await this.allocateFolderBranchName(safeFolderPath);
+    const commitMessage = ensureCommitMessage(
+      input.commit_message?.trim() || `ai(vault): create folder ${safeFolderPath}`,
+      extractBranchScope(branchName)
+    );
+    const title = input.title?.trim() || `Create folder ${safeFolderPath}`;
+    const prBody =
+      input.pr_body?.trim() ||
+      `Automated folder creation for ${safeFolderPath} with placeholder ${placeholderPath}.`;
+    const baseBranch = input.base_branch?.trim() || "main";
+    const worktreePath = await this.createWorktree(baseBranch);
+
+    try {
+      await this.git(["checkout", "-b", branchName], { cwd: worktreePath });
+
+      const worktreeFolderPath = resolveVaultPath(worktreePath, safeFolderPath);
+      const worktreePlaceholderPath = resolveVaultPath(worktreePath, placeholderPath);
+
+      if (await pathExists(worktreeFolderPath)) {
+        throw new RefusalError(`Folder already exists on base branch ${baseBranch}: ${safeFolderPath}`);
+      }
+
+      await fs.mkdir(worktreeFolderPath, { recursive: true });
+      await fs.writeFile(worktreePlaceholderPath, "", "utf8");
+      await this.git(["add", placeholderPath], { cwd: worktreePath });
+
+      const stagedFiles = await this.git(["diff", "--cached", "--name-only"], { cwd: worktreePath });
+      if (!stagedFiles.trim()) {
+        throw new RefusalError("No file changes were staged. Refusing to create an empty commit.");
+      }
+
+      await this.commit(worktreePath, commitMessage);
+      const commitSha = await this.git(["rev-parse", "HEAD"], { cwd: worktreePath });
+      await this.git(["push", "-u", "origin", branchName], { cwd: worktreePath });
+
+      const pullRequest = await this.github.createPullRequest({
+        title,
+        body: prBody,
+        head: branchName,
+        base: baseBranch,
+        draft: false
+      });
+
+      return {
+        path: safeFolderPath,
+        placeholder_path: placeholderPath,
+        url: this.buildFolderUrl(safeFolderPath),
+        branch: branchName,
+        commit_sha: commitSha.trim(),
+        pull_request: pullRequest
+      };
+    } finally {
+      await this.removeWorktree(worktreePath);
+    }
+  }
+
   async updateNoteDraft(change: NoteChange): Promise<UpdateDraftResult> {
     const safePath = normalizeVaultPath(change.path);
     const access = this.policy.accessForPath(safePath);
@@ -953,6 +1039,13 @@ export class VaultService {
     const encodedPath = encodePathForUrl(relativePath);
 
     return `${webBase}/${this.config.githubOwner}/${this.config.githubRepo}/blob/${encodeURIComponent(this.config.githubDefaultBranch)}/${encodedPath}`;
+  }
+
+  private buildFolderUrl(relativePath: string): string {
+    const webBase = buildGitHubRepoWebBase(this.config.githubApiBaseUrl);
+    const encodedPath = encodePathForUrl(relativePath);
+
+    return `${webBase}/${this.config.githubOwner}/${this.config.githubRepo}/tree/${encodeURIComponent(this.config.githubDefaultBranch)}/${encodedPath}`;
   }
 
   private buildDocumentDescriptor(relativePath: string, content: string): DocumentDescriptor {
@@ -1422,6 +1515,18 @@ export class VaultService {
     throw new RefusalError(
       `Unable to allocate a unique branch name for move ${sourcePath} -> ${destinationPath}`
     );
+  }
+
+  private async allocateFolderBranchName(folderPath: string): Promise<string> {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const branchName = buildAutoFolderBranchName(folderPath);
+
+      if (!(await this.branchExists(branchName))) {
+        return branchName;
+      }
+    }
+
+    throw new RefusalError(`Unable to allocate a unique branch name for folder ${folderPath}`);
   }
 
   private async branchExists(branchName: string): Promise<boolean> {
