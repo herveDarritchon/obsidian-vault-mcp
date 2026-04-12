@@ -1,0 +1,18 @@
+version: 1
+defaultTarget: e2e
+targets:
+  e2e:
+    repoRoot: /absolute/path/to/obsidian-mcp-e2e-vault
+    policyFile: ./vault-access-policy.e2e.yaml
+    github:
+      owner: your-user-or-org
+      repo: obsidian-mcp-e2e-vault
+
+  real-vault:
+    repoRoot: /absolute/path/to/your-real-obsidian-vault
+    policyFile: /absolute/path/to/your-real-vault-policy.yaml
+    github:
+      owner: your-user-or-org
+      repo: your-real-vault-repo
+    maxChangeFiles: 3
+    maxTotalLineDelta: 250

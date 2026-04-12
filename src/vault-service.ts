@@ -4,7 +4,7 @@ import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import type { AppConfig } from "./config.js";
+import type { VaultTargetConfig } from "./config.js";
 import { RefusalError } from "./errors.js";
 import { GitHubClient } from "./github.js";
 import { sha256 } from "./lib/hash.js";
@@ -161,12 +161,12 @@ function scorePath(query: string, filePath: string): number {
 
 export class VaultService {
   private constructor(
-    private readonly config: AppConfig,
+    private readonly config: VaultTargetConfig,
     private readonly policy: VaultPolicyEngine,
     private readonly github: GitHubClient
   ) {}
 
-  static async create(config: AppConfig): Promise<VaultService> {
+  static async create(config: VaultTargetConfig): Promise<VaultService> {
     const policy = await VaultPolicyEngine.load(config.vaultPolicyFile);
     const github = new GitHubClient({
       apiBaseUrl: config.githubApiBaseUrl,

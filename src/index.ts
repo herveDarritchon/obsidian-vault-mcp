@@ -9,6 +9,8 @@ app.listen(config.port, config.host, () => {
   logEvent("info", "server_started", {
     host: config.host,
     port: config.port,
-    mcpPath: config.mcpPath
+    mcpPath: config.mcpPath,
+    defaultTarget: config.defaultTarget,
+    targets: Object.keys(config.targets).sort()
   });
 });

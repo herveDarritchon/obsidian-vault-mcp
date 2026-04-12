@@ -5,9 +5,11 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { z } from "zod";
 
 import type { AppConfig } from "./config.js";
-import { isRefusalError } from "./errors.js";
+import { RefusalError, isRefusalError } from "./errors.js";
 import { logEvent } from "./logger.js";
 import { VaultService } from "./vault-service.js";
+
+const optionalTargetSchema = z.string().optional();
 
 const policySchemaDefinition = {
   read: z.boolean(),
@@ -18,6 +20,7 @@ const policySchemaDefinition = {
 };
 
 const readNoteOutputSchema = {
+  target: z.string(),
   path: z.string(),
   sha256: z.string(),
   content: z.string(),
@@ -25,6 +28,7 @@ const readNoteOutputSchema = {
 };
 
 const searchNotesOutputSchema = {
+  target: z.string(),
   results: z.array(
     z.object({
       path: z.string(),
@@ -35,6 +39,7 @@ const searchNotesOutputSchema = {
 };
 
 const updateDraftOutputSchema = {
+  target: z.string(),
   path: z.string(),
   current_sha256: z.string(),
   draft_sha256: z.string(),
@@ -48,6 +53,7 @@ const updateDraftOutputSchema = {
 };
 
 const proposeChangeOutputSchema = {
+  target: z.string(),
   branch: z.string(),
   commit_sha: z.string(),
   pull_request: z.object({
@@ -75,11 +81,30 @@ function withStructuredContent<T extends Record<string, unknown>>(output: T) {
   };
 }
 
-function createMcpServer(vaultService: VaultService) {
+function createTargetResolver(services: Map<string, VaultService>, defaultTarget: string) {
+  return (requestedTarget?: string) => {
+    const targetName = requestedTarget?.trim() || defaultTarget;
+    const service = services.get(targetName);
+
+    if (!service) {
+      throw new RefusalError(
+        `Unknown target: ${targetName}. Available targets: ${Array.from(services.keys()).sort().join(", ")}`
+      );
+    }
+
+    return {
+      targetName,
+      service
+    };
+  };
+}
+
+function createMcpServer(config: AppConfig, services: Map<string, VaultService>) {
   const server = new McpServer({
     name: "obsidian-vault",
     version: "0.1.0"
   });
+  const resolveTarget = createTargetResolver(services, config.defaultTarget);
 
   server.registerTool(
     "read_note",
@@ -87,6 +112,7 @@ function createMcpServer(vaultService: VaultService) {
       title: "Read Obsidian note",
       description: "Reads a note from the vault after policy checks.",
       inputSchema: {
+        target: optionalTargetSchema,
         path: z.string()
       },
       outputSchema: readNoteOutputSchema,
@@ -94,29 +120,36 @@ function createMcpServer(vaultService: VaultService) {
         readOnlyHint: true
       }
     },
-    async ({ path }) => {
+    async ({ target, path }) => {
       const requestId = randomUUID();
       logEvent("info", "tool_invoked", {
         requestId,
         tool: "read_note",
+        target: target ?? config.defaultTarget,
         paths: [path]
       });
 
       try {
-        const output = await vaultService.readNote(path);
+        const { targetName, service } = resolveTarget(target);
+        const output = await service.readNote(path);
         logEvent("info", "tool_completed", {
           requestId,
           tool: "read_note",
           result: "success",
+          target: targetName,
           paths: [output.path]
         });
-        return withStructuredContent(output);
+        return withStructuredContent({
+          target: targetName,
+          ...output
+        });
       } catch (error) {
         const message = error instanceof Error ? error.message : "read_note failed";
         logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
           requestId,
           tool: "read_note",
           result: isRefusalError(error) ? "refusal" : "error",
+          target: target ?? config.defaultTarget,
           paths: [path],
           error: message
         });
@@ -131,6 +164,7 @@ function createMcpServer(vaultService: VaultService) {
       title: "Search Obsidian notes",
       description: "Searches readable notes under selected roots.",
       inputSchema: {
+        target: optionalTargetSchema,
         query: z.string(),
         roots: z.array(z.string()).optional(),
         limit: z.number().int().min(1).max(50).default(10)
@@ -140,31 +174,38 @@ function createMcpServer(vaultService: VaultService) {
         readOnlyHint: true
       }
     },
-    async ({ query, roots, limit }) => {
+    async ({ target, query, roots, limit }) => {
       const requestId = randomUUID();
       logEvent("info", "tool_invoked", {
         requestId,
         tool: "search_notes",
+        target: target ?? config.defaultTarget,
         paths: roots ?? ["."],
         limit
       });
 
       try {
-        const output = await vaultService.searchNotes(query, roots, limit);
+        const { targetName, service } = resolveTarget(target);
+        const output = await service.searchNotes(query, roots, limit);
         logEvent("info", "tool_completed", {
           requestId,
           tool: "search_notes",
           result: "success",
+          target: targetName,
           paths: roots ?? ["."],
           resultCount: output.results.length
         });
-        return withStructuredContent(output);
+        return withStructuredContent({
+          target: targetName,
+          ...output
+        });
       } catch (error) {
         const message = error instanceof Error ? error.message : "search_notes failed";
         logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
           requestId,
           tool: "search_notes",
           result: isRefusalError(error) ? "refusal" : "error",
+          target: target ?? config.defaultTarget,
           paths: roots ?? ["."],
           error: message
         });
@@ -179,6 +220,7 @@ function createMcpServer(vaultService: VaultService) {
       title: "Prepare a note draft",
       description: "Computes a candidate markdown edit without touching git or GitHub.",
       inputSchema: {
+        target: optionalTargetSchema,
         path: z.string(),
         mode: z.enum(["replace_full", "append", "replace_section"]),
         content: z.string(),
@@ -190,17 +232,19 @@ function createMcpServer(vaultService: VaultService) {
         readOnlyHint: true
       }
     },
-    async ({ path, mode, content, section_heading, expected_sha256 }) => {
+    async ({ target, path, mode, content, section_heading, expected_sha256 }) => {
       const requestId = randomUUID();
       logEvent("info", "tool_invoked", {
         requestId,
         tool: "update_note_draft",
+        target: target ?? config.defaultTarget,
         paths: [path],
         mode
       });
 
       try {
-        const output = await vaultService.updateNoteDraft({
+        const { targetName, service } = resolveTarget(target);
+        const output = await service.updateNoteDraft({
           path,
           mode,
           content,
@@ -211,16 +255,21 @@ function createMcpServer(vaultService: VaultService) {
           requestId,
           tool: "update_note_draft",
           result: "success",
+          target: targetName,
           paths: [output.path],
           lineDelta: output.diff_summary.line_delta
         });
-        return withStructuredContent(output);
+        return withStructuredContent({
+          target: targetName,
+          ...output
+        });
       } catch (error) {
         const message = error instanceof Error ? error.message : "update_note_draft failed";
         logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
           requestId,
           tool: "update_note_draft",
           result: isRefusalError(error) ? "refusal" : "error",
+          target: target ?? config.defaultTarget,
           paths: [path],
           error: message
         });
@@ -235,6 +284,7 @@ function createMcpServer(vaultService: VaultService) {
       title: "Propose a vault change",
       description: "Applies policy-checked edits in an isolated git worktree, pushes a branch, then opens a GitHub PR.",
       inputSchema: {
+        target: optionalTargetSchema,
         title: z.string(),
         base_branch: z.string().default("main"),
         branch_name: z.string(),
@@ -255,19 +305,21 @@ function createMcpServer(vaultService: VaultService) {
       },
       outputSchema: proposeChangeOutputSchema
     },
-    async ({ title, base_branch, branch_name, commit_message, pr_body, changes }) => {
+    async ({ target, title, base_branch, branch_name, commit_message, pr_body, changes }) => {
       const requestId = randomUUID();
       const changedPaths = changes.map((change) => change.path);
       logEvent("info", "tool_invoked", {
         requestId,
         tool: "propose_change",
+        target: target ?? config.defaultTarget,
         paths: changedPaths,
         branch: branch_name,
         baseBranch: base_branch
       });
 
       try {
-        const output = await vaultService.proposeChange({
+        const { targetName, service } = resolveTarget(target);
+        const output = await service.proposeChange({
           title,
           base_branch,
           branch_name,
@@ -285,17 +337,22 @@ function createMcpServer(vaultService: VaultService) {
           requestId,
           tool: "propose_change",
           result: "success",
+          target: targetName,
           paths: output.changed_files,
           branch: output.branch,
           pullRequest: output.pull_request.url
         });
-        return withStructuredContent(output);
+        return withStructuredContent({
+          target: targetName,
+          ...output
+        });
       } catch (error) {
         const message = error instanceof Error ? error.message : "propose_change failed";
         logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
           requestId,
           tool: "propose_change",
           result: isRefusalError(error) ? "refusal" : "error",
+          target: target ?? config.defaultTarget,
           paths: changedPaths,
           branch: branch_name,
           error: message
@@ -309,7 +366,14 @@ function createMcpServer(vaultService: VaultService) {
 }
 
 export async function createHttpApp(config: AppConfig) {
-  const vaultService = await VaultService.create(config);
+  const services = new Map(
+    await Promise.all(
+      Object.entries(config.targets).map(async ([targetName, targetConfig]) => [
+        targetName,
+        await VaultService.create(targetConfig)
+      ] as const)
+    )
+  );
   const app = express();
 
   app.use(express.json({ limit: "1mb" }));
@@ -337,12 +401,14 @@ export async function createHttpApp(config: AppConfig) {
     response.json({
       ok: true,
       name: "obsidian-vault",
-      version: "0.1.0"
+      version: "0.1.0",
+      defaultTarget: config.defaultTarget,
+      targets: Object.keys(config.targets).sort()
     });
   });
 
   app.post(config.mcpPath, async (request: Request, response: Response) => {
-    const server = createMcpServer(vaultService);
+    const server = createMcpServer(config, services);
     const transport = new StreamableHTTPServerTransport({});
 
     try {

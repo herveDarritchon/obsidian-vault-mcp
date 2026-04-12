@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import type { AppConfig } from "../src/config.js";
+import type { VaultTargetConfig } from "../src/config.js";
 import { RefusalError } from "../src/errors.js";
 import { VaultService } from "../src/vault-service.js";
 
@@ -39,12 +39,9 @@ async function createVaultFixture() {
   return root;
 }
 
-function makeConfig(vaultRepoRoot: string, overrides: Partial<AppConfig> = {}): AppConfig {
+function makeConfig(vaultRepoRoot: string, overrides: Partial<VaultTargetConfig> = {}): VaultTargetConfig {
   return {
-    port: 3000,
-    host: "127.0.0.1",
-    mcpPath: "/mcp",
-    mcpAuthToken: undefined,
+    name: "test",
     vaultRepoRoot,
     vaultPolicyFile: policyPath,
     githubOwner: "example",

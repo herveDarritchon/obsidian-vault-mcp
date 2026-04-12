@@ -26,9 +26,9 @@ cp .env.example .env
 
 Renseigne ensuite les variables de `.env`:
 
-- `VAULT_REPO_ROOT`: chemin absolu vers le clone local du vault
-- `VAULT_POLICY_FILE`: chemin du YAML de policy
-- `GITHUB_OWNER`, `GITHUB_REPO`, `GITHUB_TOKEN`
+- `VAULT_REPO_ROOT`, `VAULT_POLICY_FILE`, `GITHUB_OWNER`, `GITHUB_REPO`: mode simple, un seul vault cible
+- `VAULT_TARGETS_FILE`, `VAULT_TARGET`: mode multi-target, plusieurs vaults nommés derrière le même serveur
+- `GITHUB_TOKEN`: token GitHub partagé, utilisé par défaut par toutes les cibles
 - `MCP_AUTH_TOKEN`: optionnel, pour exiger `Authorization: Bearer ...` sur les requêtes MCP
 
 ## Lancer le serveur
@@ -45,6 +45,107 @@ npm start
 ```
 
 L’endpoint de santé est `GET /health`.
+
+## Passer de l’E2E au vrai vault
+
+Le chemin le plus simple est de garder le serveur en mode mono-cible, puis de remplacer progressivement la config E2E par celle du vrai vault.
+
+### Étapes recommandées
+
+1. Clone le repo GitHub du vrai vault localement.
+2. Protège `main` côté GitHub.
+3. Prépare la vraie policy YAML du vault.
+4. Copie [.env.example](/Users/hervedarritchon/Documents/obsidian-vault-mcp/.env.example) vers `.env`.
+5. Renseigne `VAULT_REPO_ROOT`, `VAULT_POLICY_FILE`, `GITHUB_OWNER`, `GITHUB_REPO`, `GITHUB_TOKEN` pour le vrai vault.
+6. Lance d’abord le serveur localement et teste uniquement `read_note` et `search_notes`.
+7. Teste ensuite `update_note_draft` sur un chemin `propose_only`.
+8. Termine par un `propose_change` très petit sur une zone `write_via_pr`.
+
+Exemple de bascule mono-cible :
+
+```dotenv
+VAULT_REPO_ROOT=/absolute/path/to/your-real-obsidian-vault
+VAULT_POLICY_FILE=/absolute/path/to/your-real-vault-policy.yaml
+
+GITHUB_OWNER=your-user-or-org
+GITHUB_REPO=your-real-vault-repo
+GITHUB_TOKEN=github_pat_xxx
+```
+
+Si tu veux juste passer du sandbox E2E au vrai vault, c’est suffisant. Aucun changement de code ou de contrat de tool n’est nécessaire.
+
+## Gérer plusieurs repos cibles
+
+Le serveur peut maintenant charger plusieurs cibles nommées en même temps. C’est utile si tu veux :
+
+- garder le vault E2E comme sandbox permanent ;
+- brancher ensuite ton vrai vault ;
+- ajouter plus tard d’autres repos markdown ou variantes de policy.
+
+### Principe
+
+Tu fournis un fichier YAML de targets, par exemple [config/vault-targets.example.yaml](/Users/hervedarritchon/Documents/obsidian-vault-mcp/config/vault-targets.example.yaml), puis tu actives :
+
+```dotenv
+VAULT_TARGETS_FILE=./config/vault-targets.yaml
+VAULT_TARGET=e2e
+GITHUB_TOKEN=github_pat_xxx
+```
+
+- `VAULT_TARGETS_FILE` pointe vers le catalogue des repos cibles
+- `VAULT_TARGET` définit la cible par défaut si un tool ne précise pas de target
+- chaque target déclare son `repoRoot`, sa `policyFile` et son repo GitHub
+
+Exemple :
+
+```yaml
+version: 1
+defaultTarget: e2e
+targets:
+  e2e:
+    repoRoot: /absolute/path/to/obsidian-mcp-e2e-vault
+    policyFile: ./vault-access-policy.e2e.yaml
+    github:
+      owner: your-user-or-org
+      repo: obsidian-mcp-e2e-vault
+
+  real-vault:
+    repoRoot: /absolute/path/to/your-real-obsidian-vault
+    policyFile: /absolute/path/to/your-real-vault-policy.yaml
+    github:
+      owner: your-user-or-org
+      repo: your-real-vault-repo
+```
+
+### Comment cibler un repo précis
+
+Les 4 tools acceptent maintenant un champ optionnel `target`.
+
+Si tu ne passes rien :
+
+- le serveur utilise `VAULT_TARGET`
+- sinon il prend `defaultTarget` du fichier YAML
+- sinon, en mode mono-cible, il utilise la cible implicite `default`
+
+Exemple :
+
+```json
+{
+  "target": "real-vault",
+  "path": "02-Work/TOR2e/specs/community.md"
+}
+```
+
+### Stratégie recommandée
+
+Pour une mise en production propre :
+
+- garde `e2e` comme target par défaut pendant la phase de stabilisation ;
+- ajoute `real-vault` dans le catalogue ;
+- teste explicitement avec `target: "real-vault"` dans tes prompts ;
+- une fois la confiance installée, fais de `real-vault` la `defaultTarget`.
+
+Ça permet de conserver un sandbox permanent sans multiplier les serveurs MCP.
 
 ## Test E2E réel
 
@@ -101,6 +202,7 @@ Dans ce cas, commence par élargir les permissions du token sur le repo sandbox 
 
 Les variables clés sont :
 
+- `E2E_TARGET` : target à tester si le serveur est en mode multi-target
 - `VAULT_REPO_ROOT` : clone local du repo sandbox
 - `VAULT_POLICY_FILE` : policy YAML utilisée pour l’E2E
 - `E2E_NOTE_PATH` : note réelle lue, draftée puis modifiée via PR
@@ -112,6 +214,7 @@ Les variables clés sont :
 Exemple minimal :
 
 ```dotenv
+E2E_TARGET=e2e
 VAULT_REPO_ROOT=/absolute/path/to/obsidian-mcp-e2e-vault
 VAULT_POLICY_FILE=./config/vault-access-policy.e2e.yaml
 
@@ -141,6 +244,8 @@ En pratique :
 - `✅ Reject stale hash` veut dire que le garde-fou de fraîcheur empêche un write à partir d’un état périmé ;
 - `✅ E2E passed` veut dire que les protections et le flux nominal ont tous les deux été validés.
 
+Si tu es en multi-target, le harness cible `E2E_TARGET` ; sinon il utilise la cible par défaut du serveur.
+
 ## Format de policy
 
 La policy d’exemple est dans [config/vault-access-policy.example.yaml](/Users/hervedarritchon/Documents/obsidian-vault-mcp/config/vault-access-policy.example.yaml).
@@ -161,6 +266,7 @@ Entrée:
 
 ```json
 {
+  "target": "real-vault",
   "path": "02-Work/TOR2e/specs/community.md"
 }
 ```
@@ -171,6 +277,7 @@ Entrée:
 
 ```json
 {
+  "target": "real-vault",
   "query": "Chronicle tab",
   "roots": ["02-Work/TOR2e/specs"],
   "limit": 10
@@ -183,6 +290,7 @@ Entrée:
 
 ```json
 {
+  "target": "real-vault",
   "path": "02-Work/TOR2e/specs/community.md",
   "mode": "replace_section",
   "section_heading": "## Chronicle tab",
@@ -197,6 +305,7 @@ Entrée:
 
 ```json
 {
+  "target": "real-vault",
   "title": "Refine Chronicle tab spec",
   "base_branch": "main",
   "branch_name": "ai/tor2e/refine-chronicle-tab",

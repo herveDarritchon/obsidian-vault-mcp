@@ -22,6 +22,7 @@ const envFile = process.env.E2E_ENV_FILE ?? ".env.e2e";
 loadDotenv({ path: envFile, override: true });
 
 const e2eConfigSchema = z.object({
+  E2E_TARGET: z.string().min(1).optional(),
   E2E_NOTE_PATH: z.string().min(1),
   E2E_SEARCH_ROOT: z.string().min(1).optional().default("02-Work/TOR2e/working"),
   E2E_SEARCH_QUERY: z.string().min(1).optional().default("test note"),
@@ -334,12 +335,20 @@ async function main() {
   const startedAt = Date.now();
   const e2eConfig = e2eConfigSchema.parse(process.env);
   const config = loadConfig();
+  const activeTargetName = e2eConfig.E2E_TARGET ?? config.defaultTarget;
+  const activeTarget = config.targets[activeTargetName];
   const mode = e2eConfig.E2E_SKIP_PROPOSE_CHANGE ? "pre-pr" : "full";
   const app = await createHttpApp({
     ...config,
     host: "127.0.0.1",
     port: 0
   });
+
+  if (!activeTarget) {
+    throw new Error(
+      `Unknown E2E target: ${activeTargetName}. Available targets: ${Object.keys(config.targets).sort().join(", ")}`
+    );
+  }
 
   const server = await new Promise<import("node:http").Server>((resolve, reject) => {
     const instance = app.listen(0, "127.0.0.1", () => resolve(instance));
@@ -356,7 +365,8 @@ async function main() {
 
   printBanner("Obsidian Vault MCP E2E");
   printInfo("Env file", envFile);
-  printInfo("Repo", config.vaultRepoRoot);
+  printInfo("Target", activeTargetName);
+  printInfo("Repo", activeTarget.vaultRepoRoot);
   printInfo("Mode", mode);
   printInfo("Note", e2eConfig.E2E_NOTE_PATH);
   printInfo("Search root", e2eConfig.E2E_SEARCH_ROOT);
@@ -364,7 +374,7 @@ async function main() {
   printInfo("Branch", branchName);
 
   if (!e2eConfig.E2E_SKIP_PROPOSE_CHANGE) {
-    if (!config.githubToken) {
+    if (!activeTarget.githubToken) {
       throw new Error(
         "GITHUB_TOKEN is required for the full E2E flow. Set it in .env.e2e or export it before running npm run test:e2e:real."
       );
@@ -372,7 +382,7 @@ async function main() {
 
     await runStep(
       "Verify tracked note",
-      () => ensureTrackedFile(config.vaultRepoRoot, e2eConfig.E2E_NOTE_PATH),
+      () => ensureTrackedFile(activeTarget.vaultRepoRoot, e2eConfig.E2E_NOTE_PATH),
       () => `Tracked on ${e2eConfig.E2E_BASE_BRANCH}`
     );
   }
@@ -431,6 +441,7 @@ async function main() {
           content: string;
           policy: { read: boolean; write: boolean };
         }>(client, "read_note", {
+          target: activeTargetName,
           path: e2eConfig.E2E_NOTE_PATH
         }),
       (result) => `sha=${result.sha256.slice(0, 12)} read=${String(result.policy.read)} write=${String(result.policy.write)}`
@@ -443,6 +454,7 @@ async function main() {
       "Search notes",
       () =>
         callTool<{ results: Array<{ path: string }> }>(client, "search_notes", {
+          target: activeTargetName,
           query: e2eConfig.E2E_SEARCH_QUERY,
           roots: [e2eConfig.E2E_SEARCH_ROOT],
           limit: 10
@@ -467,6 +479,7 @@ async function main() {
           draft_sha256: string;
           diff_summary: { line_delta: number };
         }>(client, "update_note_draft", {
+          target: activeTargetName,
           path: e2eConfig.E2E_NOTE_PATH,
           mode: "append",
           content: marker,
@@ -484,6 +497,7 @@ async function main() {
       "Refuse blacklisted read",
       () =>
         callTool(client, "read_note", {
+          target: activeTargetName,
           path: e2eConfig.E2E_BLACKLISTED_PATH
         }),
       (message) => message.includes("Read denied by policy"),
@@ -497,6 +511,7 @@ async function main() {
       "Reject stale hash",
       () =>
         callTool(client, "update_note_draft", {
+          target: activeTargetName,
           path: e2eConfig.E2E_NOTE_PATH,
           mode: "append",
           content: `${marker.trim()}\n<!-- stale-hash-check -->`,
@@ -527,6 +542,7 @@ async function main() {
             pull_request: { number: number; url: string };
             changed_files: string[];
           }>(client, "propose_change", {
+            target: activeTargetName,
             title: `E2E validation ${runId}`,
             base_branch: e2eConfig.E2E_BASE_BRANCH,
             branch_name: branchName,
@@ -554,9 +570,9 @@ async function main() {
         "Verify GitHub PR",
         () =>
           verifyPullRequest(
-            config.githubOwner,
-            config.githubRepo,
-            config.githubToken!,
+            activeTarget.githubOwner,
+            activeTarget.githubRepo,
+            activeTarget.githubToken!,
             proposeResult.pull_request.number
           ),
         (result) => `PR #${result.number} is ${result.state} on ${result.base.ref} <- ${result.head.ref}`
@@ -577,9 +593,14 @@ async function main() {
         await runStep(
           "Cleanup PR and branch",
           async () => {
-            await closePullRequest(config.githubOwner, config.githubRepo, config.githubToken!, proposeResult.pull_request.number);
-            await deleteBranchRef(config.githubOwner, config.githubRepo, config.githubToken!, branchName);
-            await deleteLocalBranch(config.vaultRepoRoot, branchName);
+            await closePullRequest(
+              activeTarget.githubOwner,
+              activeTarget.githubRepo,
+              activeTarget.githubToken!,
+              proposeResult.pull_request.number
+            );
+            await deleteBranchRef(activeTarget.githubOwner, activeTarget.githubRepo, activeTarget.githubToken!, branchName);
+            await deleteLocalBranch(activeTarget.vaultRepoRoot, branchName);
           },
           () => `Closed PR #${proposeResult.pull_request.number} and removed ${branchName}`
         );
