@@ -459,7 +459,7 @@ async function main() {
 
     assert.deepEqual(
       tools.tools.map((tool) => tool.name).sort(),
-      ["list_notes", "propose_change", "read_note", "read_note_excerpt", "read_section", "search_notes", "update_note_draft"]
+      ["fetch", "list_notes", "propose_change", "read_note", "read_note_excerpt", "read_section", "search", "search_notes", "update_note_draft"]
     );
 
     const readResult = await runStep(
@@ -508,6 +508,46 @@ async function main() {
     assert.ok(excerptResult.excerpt.length > 0);
     assert.ok(excerptResult.summary.length <= e2eConfig.E2E_SUMMARY_MAX_CHARS);
     assert.ok(excerptResult.excerpt.length <= e2eConfig.E2E_EXCERPT_MAX_CHARS);
+
+    const openAiSearchResult = await runStep(
+      "Search OpenAI documents",
+      () =>
+        callTool<{
+          results: Array<{ id: string; title: string; url: string; text: string }>;
+        }>(client, "search", {
+          query: e2eConfig.E2E_SEARCH_QUERY
+        }),
+      (result) => `${result.results.length} OpenAI-compatible result(s)`
+    );
+
+    assert.ok(
+      openAiSearchResult.results.some((result) => result.id === e2eConfig.E2E_NOTE_PATH),
+      `Expected search to return ${e2eConfig.E2E_NOTE_PATH}`
+    );
+
+    const fetchTarget = openAiSearchResult.results.find((result) => result.id === e2eConfig.E2E_NOTE_PATH)
+      ?? openAiSearchResult.results[0];
+
+    assert.ok(fetchTarget, "Expected at least one search result for fetch.");
+
+    const fetchResult = await runStep(
+      "Fetch OpenAI document",
+      () =>
+        callTool<{
+          id: string;
+          title: string;
+          text: string;
+          url: string;
+          metadata: Record<string, string>;
+        }>(client, "fetch", {
+          id: fetchTarget.id
+        }),
+      (result) => `${result.id}: ${result.text.length} chars fetched`
+    );
+
+    assert.equal(fetchResult.id, fetchTarget.id);
+    assert.ok(fetchResult.text.length > 0);
+    assert.equal(fetchResult.metadata.path, fetchTarget.id);
 
     const listResult = await runStep(
       "List notes",

@@ -5,7 +5,7 @@ Serveur MCP distant minimal pour un vault Obsidian, avec policy côté serveur e
 ## Ce que fait cette V1
 
 - expose un endpoint MCP distant en Streamable HTTP sur `POST /mcp`
-- fournit 7 tools: `list_notes`, `read_note`, `read_note_excerpt`, `read_section`, `search_notes`, `update_note_draft`, `propose_change`
+- fournit 9 tools: `search`, `fetch`, `list_notes`, `read_note`, `read_note_excerpt`, `read_section`, `search_notes`, `update_note_draft`, `propose_change`
 - charge une policy YAML et bloque les chemins interdits côté serveur
 - ouvre une PR GitHub après écriture dans un worktree git temporaire, pour éviter de salir le clone principal du vault
 - laisse `update_note_draft` sans effet de bord et réserve `propose_change` au flux d’écriture
@@ -57,7 +57,7 @@ Le chemin le plus simple est de garder le serveur en mode mono-cible, puis de re
 3. Prépare la vraie policy YAML du vault.
 4. Copie [.env.example](/Users/hervedarritchon/Documents/obsidian-vault-mcp/.env.example) vers `.env`.
 5. Renseigne `VAULT_REPO_ROOT`, `VAULT_POLICY_FILE`, `GITHUB_OWNER`, `GITHUB_REPO`, `GITHUB_TOKEN` pour le vrai vault.
-6. Lance d’abord le serveur localement et teste uniquement `read_note` et `search_notes`.
+6. Lance d’abord le serveur localement et teste d’abord `search`, `fetch`, `read_note` et `search_notes`.
 7. Teste ensuite `update_note_draft` sur un chemin `propose_only`.
 8. Termine par un `propose_change` très petit sur une zone `write_via_pr`.
 
@@ -151,7 +151,9 @@ targets:
 
 ### Comment cibler un repo précis
 
-Les 7 tools acceptent maintenant un champ optionnel `target`.
+Les 7 tools “vault natifs” acceptent maintenant un champ optionnel `target`.
+
+Les tools OpenAI-compatibles `search` et `fetch` restent volontairement mono-cible côté appel: ils utilisent la target par défaut du serveur pour rester alignés avec les workflows ChatGPT/OpenAI qui attendent une source documentaire unique.
 
 Si tu ne passes rien :
 
@@ -193,7 +195,7 @@ Le script vérifie maintenant le flux de lecture avant même le flux PR:
 
 - démarre le serveur MCP localement sur un port éphémère ;
 - appelle les tools via un client MCP HTTP ;
-- valide `read_note`, `read_note_excerpt`, `list_notes`, `search_notes` et `update_note_draft` sur une vraie note ;
+- valide `search`, `fetch`, `read_note`, `read_note_excerpt`, `list_notes`, `search_notes` et `update_note_draft` sur une vraie note ;
 - valide `read_section` sur une note/section stable dédiée ;
 - vérifie qu’une lecture sur une zone blacklistée est bien refusée ;
 - vérifie qu’un `expected_sha256` périmé est bien rejeté ;
@@ -305,6 +307,39 @@ Les règles `deny` sont absolues. Ensuite, la dernière règle compatible la plu
 
 ## Contrat des tools
 
+### `search`
+
+Entrée:
+
+```json
+{
+  "query": "Chronicle tab"
+}
+```
+
+Retour:
+
+- bloc texte JSON unique
+- format OpenAI-compatible: `results[]` avec `id`, `title`, `url`, `text`
+- utilise toujours la target par défaut du serveur
+
+### `fetch`
+
+Entrée:
+
+```json
+{
+  "id": "02-Work/TOR2e/specs/community.md"
+}
+```
+
+Retour:
+
+- bloc texte JSON unique
+- format OpenAI-compatible: `id`, `title`, `text`, `url`, `metadata`
+- accepte aussi une GitHub blob URL générée par `search`
+- utilise toujours la target par défaut du serveur
+
 ### `read_note`
 
 Entrée:
@@ -409,6 +444,7 @@ Entrée:
 ## Notes de conception
 
 - `search_notes` fait un scan markdown simple et portable, sans index dédié
+- `search` et `fetch` fournissent une couche de compatibilité OpenAI pour les workflows documentaires
 - `read_note_excerpt` produit un résumé déterministe côté serveur, sans dépendre d’un LLM externe
 - `read_section` et `replace_section` supportent les headings ATX (`#`, `##`, `###`, etc.)
 - `propose_change` refuse les branches déjà existantes pour éviter les collisions silencieuses

@@ -12,6 +12,7 @@ import { normalizeVaultPath, resolveVaultPath, toVaultRelativePath } from "./lib
 import { applyChange, buildNoteExcerpt, buildDiffSummary, extractSection } from "./markdown.js";
 import { VaultPolicyEngine } from "./policy.js";
 import type {
+  OpenAIFetchResult,
   ListNotesResult,
   NoteChange,
   OpenAISearchResultSet,
@@ -194,6 +195,42 @@ function encodePathForUrl(relativePath: string): string {
     .join("/");
 }
 
+function decodeGitHubBlobPath(
+  identifier: string,
+  options: {
+    owner: string;
+    repo: string;
+    defaultBranch: string;
+    apiBaseUrl: string;
+  }
+): string | null {
+  try {
+    const parsed = new URL(identifier);
+    const webBase = new URL(buildGitHubRepoWebBase(options.apiBaseUrl));
+
+    if (parsed.origin !== webBase.origin) {
+      return null;
+    }
+
+    const expectedPrefix = `${webBase.pathname.replace(/\/$/, "")}/${options.owner}/${options.repo}/blob/${encodeURIComponent(options.defaultBranch)}/`;
+    const normalizedPath = parsed.pathname;
+
+    if (!normalizedPath.startsWith(expectedPrefix)) {
+      return null;
+    }
+
+    const encodedRelativePath = normalizedPath.slice(expectedPrefix.length);
+    const relativePath = encodedRelativePath
+      .split("/")
+      .map((segment) => decodeURIComponent(segment))
+      .join("/");
+
+    return normalizeVaultPath(relativePath);
+  } catch {
+    return null;
+  }
+}
+
 export class VaultService {
   private constructor(
     private readonly config: VaultTargetConfig,
@@ -322,6 +359,24 @@ export class VaultService {
     );
 
     return { results };
+  }
+
+  async fetchOpenAI(identifier: string): Promise<OpenAIFetchResult> {
+    const safePath = this.resolveOpenAIIdentifier(identifier);
+    const note = await this.readNote(safePath);
+
+    return {
+      id: note.path,
+      title: extractNoteTitle(note.content, note.path),
+      text: note.content,
+      url: this.buildDocumentUrl(note.path),
+      metadata: {
+        target: this.config.name,
+        path: note.path,
+        sha256: note.sha256,
+        source: "obsidian-vault"
+      }
+    };
   }
 
   async updateNoteDraft(change: NoteChange): Promise<UpdateDraftResult> {
@@ -513,6 +568,23 @@ export class VaultService {
     const encodedPath = encodePathForUrl(relativePath);
 
     return `${webBase}/${this.config.githubOwner}/${this.config.githubRepo}/blob/${encodeURIComponent(this.config.githubDefaultBranch)}/${encodedPath}`;
+  }
+
+  private resolveOpenAIIdentifier(identifier: string): string {
+    const trimmed = identifier.trim();
+
+    if (!trimmed) {
+      throw new RefusalError("id is required.");
+    }
+
+    const fromUrl = decodeGitHubBlobPath(trimmed, {
+      owner: this.config.githubOwner,
+      repo: this.config.githubRepo,
+      defaultBranch: this.config.githubDefaultBranch,
+      apiBaseUrl: this.config.githubApiBaseUrl
+    });
+
+    return fromUrl ?? normalizeVaultPath(trimmed);
   }
 
   private async searchDirectory(

@@ -63,6 +63,14 @@ export interface OpenAISearchResultSet extends Record<string, unknown> {
   results: OpenAISearchResult[];
 }
 
+export interface OpenAIFetchResult extends Record<string, unknown> {
+  id: string;
+  title: string;
+  text: string;
+  url: string;
+  metadata: Record<string, string>;
+}
+
 export interface ListNotesItem {
   path: string;
 }

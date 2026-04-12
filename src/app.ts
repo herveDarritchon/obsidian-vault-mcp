@@ -363,6 +363,54 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
   );
 
   server.registerTool(
+    "fetch",
+    {
+      title: "Fetch vault document",
+      description:
+        "Fetches the full contents of a readable vault document by id and returns an OpenAI-compatible document payload.",
+      inputSchema: {
+        id: z.string()
+      },
+      annotations: {
+        readOnlyHint: true
+      }
+    },
+    async ({ id }) => {
+      const requestId = randomUUID();
+      logEvent("info", "tool_invoked", {
+        requestId,
+        tool: "fetch",
+        target: config.defaultTarget,
+        paths: [id]
+      });
+
+      try {
+        const { targetName, service } = resolveTarget();
+        const output = await service.fetchOpenAI(id);
+        logEvent("info", "tool_completed", {
+          requestId,
+          tool: "fetch",
+          result: "success",
+          target: targetName,
+          paths: [output.id]
+        });
+        return withJsonTextOnly(output);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "fetch failed";
+        logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
+          requestId,
+          tool: "fetch",
+          result: isRefusalError(error) ? "refusal" : "error",
+          target: config.defaultTarget,
+          paths: [id],
+          error: message
+        });
+        return toolError(message);
+      }
+    }
+  );
+
+  server.registerTool(
     "list_notes",
     {
       title: "List vault notes",

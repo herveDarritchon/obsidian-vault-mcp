@@ -174,6 +174,36 @@ test("searchOpenAI returns OpenAI-compatible document results", async () => {
   );
 });
 
+test("fetchOpenAI returns full note contents and metadata", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const output = await service.fetchOpenAI("02-Work/TOR2e/specs/community.md");
+
+  assert.equal(output.id, "02-Work/TOR2e/specs/community.md");
+  assert.equal(output.title, "Community");
+  assert.match(output.text, /## Chronicle tab/);
+  assert.equal(
+    output.url,
+    "https://github.com/example/vault/blob/main/02-Work/TOR2e/specs/community.md"
+  );
+  assert.equal(output.metadata.target, "test");
+  assert.equal(output.metadata.path, "02-Work/TOR2e/specs/community.md");
+  assert.ok((output.metadata.sha256 ?? "").length > 0);
+});
+
+test("fetchOpenAI accepts a GitHub blob URL returned by search", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const output = await service.fetchOpenAI(
+    "https://github.com/example/vault/blob/main/02-Work/TOR2e/specs/community.md"
+  );
+
+  assert.equal(output.id, "02-Work/TOR2e/specs/community.md");
+  assert.equal(output.title, "Community");
+});
+
 test("propose_change refuses changes spanning multiple scope buckets", async () => {
   const vaultRepoRoot = await createVaultFixture();
   const service = await VaultService.create(makeConfig(vaultRepoRoot));
