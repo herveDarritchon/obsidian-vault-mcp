@@ -49,7 +49,8 @@ test("loadConfig supports legacy single-target environment", async () => {
       VAULT_POLICY_FILE: "./config/vault-access-policy.example.yaml",
       GITHUB_OWNER: "example-owner",
       GITHUB_REPO: "legacy-vault",
-      GITHUB_TOKEN: "legacy-token"
+      GITHUB_TOKEN: "legacy-token",
+      GITHUB_DEFAULT_BRANCH: "stable"
     },
     () => loadConfig()
   );
@@ -60,6 +61,7 @@ test("loadConfig supports legacy single-target environment", async () => {
   assert.equal(config.targets.default?.githubOwner, "example-owner");
   assert.equal(config.targets.default?.githubRepo, "legacy-vault");
   assert.equal(config.targets.default?.githubToken, "legacy-token");
+  assert.equal(config.targets.default?.githubDefaultBranch, "stable");
 });
 
 test("loadConfig supports a multi-target catalog with a selected default target", async () => {
@@ -79,6 +81,7 @@ targets:
     github:
       owner: herveDarritchon
       repo: obsidian-real-vault
+      defaultBranch: trunk
     githubTokenEnv: REAL_VAULT_TOKEN
     maxChangeFiles: 3
 `);
@@ -109,6 +112,8 @@ targets:
   );
   assert.equal(config.targets.real?.githubToken, "real-token");
   assert.equal(config.targets.e2e?.githubToken, "shared-token");
+  assert.equal(config.targets.real?.githubDefaultBranch, "trunk");
+  assert.equal(config.targets.e2e?.githubDefaultBranch, "main");
   assert.equal(config.targets.real?.maxChangeFiles, 3);
   assert.equal(config.targets.e2e?.githubRepo, "obsidian-mcp-e2e-vault");
 });

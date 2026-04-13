@@ -20,6 +20,7 @@ rules:
       - 02-Work/TOR2e/working/**
       - 02-Work/TOR2e/scratch/**
       - 02-Work/TOR2e/specs/**
+      - 02-Work/TOR2e/00-START-HERE/**
       - 02-Work/Drafts/**
 
   - name: tor2e-propose-only
@@ -33,3 +34,8 @@ rules:
       - 03-Knowledge/Technical/**
       - 04-Archive/**
       - 90-Templates/**
+
+  - name: tor2e-reorg-write-via-pr
+    effect: write_via_pr
+    paths:
+      - 02-Work/TOR2e/**

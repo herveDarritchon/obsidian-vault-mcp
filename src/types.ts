@@ -19,20 +19,84 @@ export interface NoteChange {
 }
 
 export interface ReadNoteResult extends Record<string, unknown> {
+  id: string;
+  title: string;
   path: string;
+  url: string;
   sha256: string;
   content: string;
   policy: PolicyAccess;
 }
 
-export interface SearchResult {
+export interface ReadSectionResult extends Record<string, unknown> {
+  id: string;
+  title: string;
   path: string;
+  url: string;
+  section_heading: string;
+  note_sha256: string;
+  content: string;
+  policy: PolicyAccess;
+}
+
+export interface ReadNoteExcerptResult extends Record<string, unknown> {
+  id: string;
+  title: string;
+  path: string;
+  url: string;
+  note_sha256: string;
+  summary: string;
+  excerpt: string;
+  headings: string[];
+  policy: PolicyAccess;
+}
+
+export interface SearchResult {
+  id: string;
+  title: string;
+  path: string;
+  url: string;
   snippet: string;
   score: number;
 }
 
 export interface SearchNotesResult extends Record<string, unknown> {
   results: SearchResult[];
+}
+
+export interface OpenAISearchResult {
+  id: string;
+  title: string;
+  path: string;
+  excerpt: string;
+  url: string;
+  text: string;
+}
+
+export interface OpenAISearchResultSet extends Record<string, unknown> {
+  results: OpenAISearchResult[];
+}
+
+export interface OpenAIFetchResult extends Record<string, unknown> {
+  id: string;
+  title: string;
+  path: string;
+  content: string;
+  text: string;
+  url: string;
+  metadata: Record<string, unknown>;
+}
+
+export interface ListNotesItem {
+  id: string;
+  title: string;
+  path: string;
+  url: string;
+}
+
+export interface ListNotesResult extends Record<string, unknown> {
+  root: string;
+  results: ListNotesItem[];
 }
 
 export interface DraftDiffSummary {
@@ -60,4 +124,27 @@ export interface ProposeChangeResult extends Record<string, unknown> {
   commit_sha: string;
   pull_request: PullRequestInfo;
   changed_files: string[];
+}
+
+export interface MoveNoteResult extends Record<string, unknown> {
+  id: string;
+  title: string;
+  previous_path: string;
+  path: string;
+  url: string;
+  sha256: string;
+  branch: string;
+  commit_sha: string;
+  pull_request: PullRequestInfo;
+}
+
+export type RenameNoteResult = MoveNoteResult;
+
+export interface CreateFolderResult extends Record<string, unknown> {
+  path: string;
+  placeholder_path: string;
+  url: string;
+  branch: string;
+  commit_sha: string;
+  pull_request: PullRequestInfo;
 }

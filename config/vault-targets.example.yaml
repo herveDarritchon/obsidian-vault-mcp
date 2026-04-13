@@ -7,6 +7,7 @@ targets:
     github:
       owner: your-user-or-org
       repo: obsidian-mcp-e2e-vault
+      defaultBranch: main
 
   real-vault:
     repoRoot: /absolute/path/to/your-real-obsidian-vault
@@ -14,5 +15,6 @@ targets:
     github:
       owner: your-user-or-org
       repo: your-real-vault-repo
+      defaultBranch: main
     maxChangeFiles: 3
     maxTotalLineDelta: 250

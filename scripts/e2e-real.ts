@@ -1,9 +1,8 @@
-import "dotenv/config";
-
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import fs from "node:fs";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -19,13 +18,31 @@ const execFileAsync = promisify(execFile);
 process.env.LOG_FORMAT ??= "silent";
 
 const envFile = process.env.E2E_ENV_FILE ?? ".env.e2e";
-loadDotenv({ path: envFile, override: true });
+
+function loadEnvFileIfPresent(path: string, override: boolean) {
+  if (!fs.existsSync(path)) {
+    return;
+  }
+
+  loadDotenv({ path, override });
+}
+
+loadEnvFileIfPresent(".env", false);
+loadEnvFileIfPresent(envFile, true);
 
 const e2eConfigSchema = z.object({
   E2E_TARGET: z.string().min(1).optional(),
   E2E_NOTE_PATH: z.string().min(1),
   E2E_SEARCH_ROOT: z.string().min(1).optional().default("02-Work/TOR2e/working"),
+  E2E_LIST_ROOT: z.string().min(1).optional(),
+  E2E_LIST_LIMIT: z.coerce.number().int().min(1).max(200).optional().default(200),
+  E2E_EXCERPT_PATH: z.string().min(1).optional(),
+  E2E_EXCERPT_MAX_CHARS: z.coerce.number().int().min(120).max(4000).optional().default(220),
+  E2E_SUMMARY_MAX_CHARS: z.coerce.number().int().min(80).max(1000).optional().default(120),
+  E2E_EXCERPT_MAX_HEADINGS: z.coerce.number().int().min(0).max(20).optional().default(6),
   E2E_SEARCH_QUERY: z.string().min(1).optional().default("test note"),
+  E2E_SECTION_PATH: z.string().min(1).optional().default("README.md"),
+  E2E_SECTION_HEADING: z.string().min(1).optional().default("# obsidian-mcp-e2e-vault"),
   E2E_BLACKLISTED_PATH: z.string().min(1).optional().default("Private/e2e-secret.md"),
   E2E_BASE_BRANCH: z.string().min(1).optional().default("main"),
   E2E_BRANCH_SCOPE: z.string().min(1).optional().default("e2e"),
@@ -121,6 +138,13 @@ function summarizeError(error: unknown): { title: string; hint?: string } {
     return {
       title: "Policy MCP bloquante",
       hint: "Vérifie la policy YAML et le chemin de la note ciblée."
+    };
+  }
+
+  if (message.includes("Unknown E2E target:")) {
+    return {
+      title: message,
+      hint: "Aligne E2E_TARGET avec le catalogue chargé par VAULT_TARGETS_FILE, ou retire E2E_TARGET pour utiliser la target par défaut."
     };
   }
 
@@ -337,6 +361,8 @@ async function main() {
   const config = loadConfig();
   const activeTargetName = e2eConfig.E2E_TARGET ?? config.defaultTarget;
   const activeTarget = config.targets[activeTargetName];
+  const listRoot = e2eConfig.E2E_LIST_ROOT ?? e2eConfig.E2E_SEARCH_ROOT;
+  const excerptPath = e2eConfig.E2E_EXCERPT_PATH ?? e2eConfig.E2E_NOTE_PATH;
   const mode = e2eConfig.E2E_SKIP_PROPOSE_CHANGE ? "pre-pr" : "full";
   const app = await createHttpApp({
     ...config,
@@ -345,8 +371,9 @@ async function main() {
   });
 
   if (!activeTarget) {
+    const loadedCatalog = process.env.VAULT_TARGETS_FILE ?? "(single-target mode)";
     throw new Error(
-      `Unknown E2E target: ${activeTargetName}. Available targets: ${Object.keys(config.targets).sort().join(", ")}`
+      `Unknown E2E target: ${activeTargetName}. Available targets: ${Object.keys(config.targets).sort().join(", ")}. Loaded config: ${loadedCatalog}`
     );
   }
 
@@ -370,6 +397,9 @@ async function main() {
   printInfo("Mode", mode);
   printInfo("Note", e2eConfig.E2E_NOTE_PATH);
   printInfo("Search root", e2eConfig.E2E_SEARCH_ROOT);
+  printInfo("List root", listRoot);
+  printInfo("Excerpt", `${excerptPath} (${e2eConfig.E2E_SUMMARY_MAX_CHARS}/${e2eConfig.E2E_EXCERPT_MAX_CHARS})`);
+  printInfo("Section", `${e2eConfig.E2E_SECTION_PATH} -> ${e2eConfig.E2E_SECTION_HEADING}`);
   printInfo("Blacklist", e2eConfig.E2E_BLACKLISTED_PATH);
   printInfo("Branch", branchName);
 
@@ -429,7 +459,20 @@ async function main() {
 
     assert.deepEqual(
       tools.tools.map((tool) => tool.name).sort(),
-      ["propose_change", "read_note", "search_notes", "update_note_draft"]
+      [
+        "create_folder",
+        "fetch",
+        "list_notes",
+        "move_note",
+        "propose_change",
+        "read_note",
+        "read_note_excerpt",
+        "read_section",
+        "rename_note",
+        "search",
+        "search_notes",
+        "update_note_draft"
+      ]
     );
 
     const readResult = await runStep(
@@ -449,6 +492,101 @@ async function main() {
 
     assert.equal(readResult.path, e2eConfig.E2E_NOTE_PATH);
     assert.equal(readResult.policy.read, true);
+
+    const excerptResult = await runStep(
+      "Read note excerpt",
+      () =>
+        callTool<{
+          path: string;
+          note_sha256: string;
+          summary: string;
+          excerpt: string;
+          headings: string[];
+          policy: { read: boolean };
+        }>(client, "read_note_excerpt", {
+          target: activeTargetName,
+          path: excerptPath,
+          max_excerpt_chars: e2eConfig.E2E_EXCERPT_MAX_CHARS,
+          max_summary_chars: e2eConfig.E2E_SUMMARY_MAX_CHARS,
+          max_headings: e2eConfig.E2E_EXCERPT_MAX_HEADINGS
+        }),
+      (result) =>
+        `${result.path}: summary ${result.summary.length} chars, excerpt ${result.excerpt.length} chars, ${result.headings.length} heading(s)`
+    );
+
+    assert.equal(excerptResult.path, excerptPath);
+    assert.equal(excerptResult.policy.read, true);
+    assert.ok(excerptResult.note_sha256.length > 0);
+    assert.ok(excerptResult.summary.length > 0);
+    assert.ok(excerptResult.excerpt.length > 0);
+    assert.ok(excerptResult.summary.length <= e2eConfig.E2E_SUMMARY_MAX_CHARS);
+    assert.ok(excerptResult.excerpt.length <= e2eConfig.E2E_EXCERPT_MAX_CHARS);
+
+    const openAiSearchResult = await runStep(
+      "Search OpenAI documents",
+      () =>
+        callTool<{
+          results: Array<{ id: string; title: string; path: string; excerpt: string; url: string; text: string }>;
+        }>(client, "search", {
+          query: e2eConfig.E2E_SEARCH_QUERY
+        }),
+      (result) => `${result.results.length} OpenAI-compatible result(s)`
+    );
+
+    assert.ok(
+      openAiSearchResult.results.some((result) => result.path === e2eConfig.E2E_NOTE_PATH),
+      `Expected search to return ${e2eConfig.E2E_NOTE_PATH}`
+    );
+    assert.ok(
+      openAiSearchResult.results.every((result) => /^obsidian-vault:v1:[^:]+:[A-Za-z0-9_-]+$/.test(result.id)),
+      "Expected search to return stable document ids."
+    );
+
+    const fetchTarget = openAiSearchResult.results.find((result) => result.path === e2eConfig.E2E_NOTE_PATH)
+      ?? openAiSearchResult.results[0];
+
+    assert.ok(fetchTarget, "Expected at least one search result for fetch.");
+    assert.ok(fetchTarget.excerpt.length > 0);
+
+    const fetchResult = await runStep(
+      "Fetch OpenAI document",
+      () =>
+        callTool<{
+          id: string;
+          title: string;
+          path: string;
+          content: string;
+          text: string;
+          url: string;
+          metadata: Record<string, string>;
+        }>(client, "fetch", {
+          id: fetchTarget.id
+        }),
+      (result) => `${result.id}: ${result.text.length} chars fetched`
+    );
+
+    assert.equal(fetchResult.id, fetchTarget.id);
+    assert.equal(fetchResult.path, fetchTarget.path);
+    assert.ok(fetchResult.content.length > 0);
+    assert.ok(fetchResult.text.length > 0);
+    assert.equal(fetchResult.metadata.path, fetchTarget.path);
+
+    const listResult = await runStep(
+      "List notes",
+      () =>
+        callTool<{ root: string; results: Array<{ path: string }> }>(client, "list_notes", {
+          target: activeTargetName,
+          root: listRoot,
+          limit: e2eConfig.E2E_LIST_LIMIT
+        }),
+      (result) => `${result.results.length} note(s) listed under ${result.root}`
+    );
+
+    assert.equal(listResult.root, listRoot);
+    assert.ok(
+      listResult.results.some((result) => result.path === e2eConfig.E2E_NOTE_PATH),
+      `Expected list_notes to include ${e2eConfig.E2E_NOTE_PATH} under ${listRoot}`
+    );
 
     const searchResult = await runStep(
       "Search notes",
@@ -492,6 +630,30 @@ async function main() {
     assert.equal(draftResult.current_sha256, readResult.sha256);
     assert.ok(draftResult.draft_content.includes(marker.trim()));
     assert.ok(draftResult.diff_summary.line_delta >= 1);
+
+    const readSectionResult = await runStep(
+      "Read section",
+      () =>
+        callTool<{
+          path: string;
+          section_heading: string;
+          note_sha256: string;
+          content: string;
+          policy: { read: boolean };
+        }>(client, "read_section", {
+          target: activeTargetName,
+          path: e2eConfig.E2E_SECTION_PATH,
+          section_heading: e2eConfig.E2E_SECTION_HEADING
+        }),
+      (result) =>
+        `${result.path} -> ${result.section_heading} (${result.content.split(/\r?\n/).length} line(s))`
+    );
+
+    assert.equal(readSectionResult.path, e2eConfig.E2E_SECTION_PATH);
+    assert.equal(readSectionResult.section_heading, e2eConfig.E2E_SECTION_HEADING);
+    assert.equal(readSectionResult.policy.read, true);
+    assert.ok(readSectionResult.note_sha256.length > 0);
+    assert.match(readSectionResult.content, new RegExp(`^${e2eConfig.E2E_SECTION_HEADING.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`, "m"));
 
     await runExpectedFailureStep(
       "Refuse blacklisted read",
@@ -634,13 +796,23 @@ async function main() {
 }
 
 main().catch((error) => {
+  const summary = summarizeError(error);
+
+  if (!steps.some((step) => step.status === "failed")) {
+    steps.push({
+      name: "Bootstrap E2E run",
+      status: "failed",
+      durationMs: 0,
+      detail: summary.title
+    });
+  }
+
   printSummary({
     elapsedMs: 0,
     mode: process.env.E2E_SKIP_PROPOSE_CHANGE === "true" ? "pre-pr" : "full",
     notePath: process.env.E2E_NOTE_PATH ?? "unknown",
     branchName: "not-created"
   });
-  const summary = summarizeError(error);
   printLine();
   printLine(`${color("❗ Why it failed", "red")}`);
   printLine(`   ${summary.title}`);

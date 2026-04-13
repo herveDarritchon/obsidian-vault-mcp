@@ -21,9 +21,37 @@ const policySchemaDefinition = {
 
 const readNoteOutputSchema = {
   target: z.string(),
+  id: z.string(),
+  title: z.string(),
   path: z.string(),
+  url: z.string().url(),
   sha256: z.string(),
   content: z.string(),
+  policy: z.object(policySchemaDefinition)
+};
+
+const readSectionOutputSchema = {
+  target: z.string(),
+  id: z.string(),
+  title: z.string(),
+  path: z.string(),
+  url: z.string().url(),
+  section_heading: z.string(),
+  note_sha256: z.string(),
+  content: z.string(),
+  policy: z.object(policySchemaDefinition)
+};
+
+const readNoteExcerptOutputSchema = {
+  target: z.string(),
+  id: z.string(),
+  title: z.string(),
+  path: z.string(),
+  url: z.string().url(),
+  note_sha256: z.string(),
+  summary: z.string(),
+  excerpt: z.string(),
+  headings: z.array(z.string()),
   policy: z.object(policySchemaDefinition)
 };
 
@@ -31,9 +59,25 @@ const searchNotesOutputSchema = {
   target: z.string(),
   results: z.array(
     z.object({
+      id: z.string(),
+      title: z.string(),
       path: z.string(),
+      url: z.string().url(),
       snippet: z.string(),
       score: z.number()
+    })
+  )
+};
+
+const listNotesOutputSchema = {
+  target: z.string(),
+  root: z.string(),
+  results: z.array(
+    z.object({
+      id: z.string(),
+      title: z.string(),
+      path: z.string(),
+      url: z.string().url()
     })
   )
 };
@@ -63,6 +107,37 @@ const proposeChangeOutputSchema = {
   changed_files: z.array(z.string())
 };
 
+const moveNoteOutputSchema = {
+  target: z.string(),
+  id: z.string(),
+  title: z.string(),
+  previous_path: z.string(),
+  path: z.string(),
+  url: z.string().url(),
+  sha256: z.string(),
+  branch: z.string(),
+  commit_sha: z.string(),
+  pull_request: z.object({
+    number: z.number().int(),
+    url: z.string().url()
+  })
+};
+
+const renameNoteOutputSchema = moveNoteOutputSchema;
+
+const createFolderOutputSchema = {
+  target: z.string(),
+  path: z.string(),
+  placeholder_path: z.string(),
+  url: z.string().url(),
+  branch: z.string(),
+  commit_sha: z.string(),
+  pull_request: z.object({
+    number: z.number().int(),
+    url: z.string().url()
+  })
+};
+
 function toolError(message: string) {
   return {
     content: [{ type: "text" as const, text: message }],
@@ -78,6 +153,12 @@ function withStructuredContent<T extends Record<string, unknown>>(output: T) {
   return {
     content: [{ type: "text" as const, text: jsonText(output) }],
     structuredContent: output
+  };
+}
+
+function withJsonTextOnly<T extends Record<string, unknown>>(output: T) {
+  return {
+    content: [{ type: "text" as const, text: jsonText(output) }]
   };
 }
 
@@ -110,28 +191,32 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     "read_note",
     {
       title: "Read Obsidian note",
-      description: "Reads a note from the vault after policy checks.",
+      description:
+        "Returns the full content of a note. Costly — loads the entire document. Prefer read_note_excerpt for initial exploration and use this only when the full text is required.",
       inputSchema: {
         target: optionalTargetSchema,
-        path: z.string()
+        id: z.string().optional(),
+        path: z.string().optional()
       },
       outputSchema: readNoteOutputSchema,
       annotations: {
         readOnlyHint: true
       }
     },
-    async ({ target, path }) => {
+    async ({ target, id, path }) => {
       const requestId = randomUUID();
+      const reference = id ?? path ?? "<missing>";
       logEvent("info", "tool_invoked", {
         requestId,
         tool: "read_note",
         target: target ?? config.defaultTarget,
-        paths: [path]
+        paths: [reference]
       });
 
       try {
         const { targetName, service } = resolveTarget(target);
-        const output = await service.readNote(path);
+        const safePath = service.resolveReadReference({ id, path });
+        const output = await service.readNote(safePath);
         logEvent("info", "tool_completed", {
           requestId,
           tool: "read_note",
@@ -150,7 +235,287 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           tool: "read_note",
           result: isRefusalError(error) ? "refusal" : "error",
           target: target ?? config.defaultTarget,
-          paths: [path],
+          paths: [reference],
+          error: message
+        });
+        return toolError(message);
+      }
+    }
+  );
+
+  server.registerTool(
+    "read_section",
+    {
+      title: "Read note section",
+      description:
+        "Returns a single markdown section from a note. Cheaper than read_note when only one section is needed. Use read_note_excerpt first to discover available headings before calling this.",
+      inputSchema: {
+        target: optionalTargetSchema,
+        id: z.string().optional(),
+        path: z.string().optional(),
+        section_heading: z.string()
+      },
+      outputSchema: readSectionOutputSchema,
+      annotations: {
+        readOnlyHint: true
+      }
+    },
+    async ({ target, id, path, section_heading }) => {
+      const requestId = randomUUID();
+      const reference = id ?? path ?? "<missing>";
+      logEvent("info", "tool_invoked", {
+        requestId,
+        tool: "read_section",
+        target: target ?? config.defaultTarget,
+        paths: [reference],
+        sectionHeading: section_heading
+      });
+
+      try {
+        const { targetName, service } = resolveTarget(target);
+        const safePath = service.resolveReadReference({ id, path });
+        const output = await service.readSection(safePath, section_heading);
+        logEvent("info", "tool_completed", {
+          requestId,
+          tool: "read_section",
+          result: "success",
+          target: targetName,
+          paths: [output.path],
+          sectionHeading: output.section_heading
+        });
+        return withStructuredContent({
+          target: targetName,
+          ...output
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "read_section failed";
+        logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
+          requestId,
+          tool: "read_section",
+          result: isRefusalError(error) ? "refusal" : "error",
+          target: target ?? config.defaultTarget,
+          paths: [reference],
+          sectionHeading: section_heading,
+          error: message
+        });
+        return toolError(message);
+      }
+    }
+  );
+
+  server.registerTool(
+    "read_note_excerpt",
+    {
+      title: "Read note excerpt",
+      description:
+        "Returns a compact summary, excerpt, and heading list for a note. Start here before read_note or read_section — this is the preferred low-cost way to understand a note's content and structure.",
+      inputSchema: {
+        target: optionalTargetSchema,
+        id: z.string().optional(),
+        path: z.string().optional(),
+        max_excerpt_chars: z.number().int().min(120).max(4000).default(800),
+        max_summary_chars: z.number().int().min(80).max(1000).default(240),
+        max_headings: z.number().int().min(0).max(20).default(6)
+      },
+      outputSchema: readNoteExcerptOutputSchema,
+      annotations: {
+        readOnlyHint: true
+      }
+    },
+    async ({ target, id, path, max_excerpt_chars, max_summary_chars, max_headings }) => {
+      const requestId = randomUUID();
+      const reference = id ?? path ?? "<missing>";
+      logEvent("info", "tool_invoked", {
+        requestId,
+        tool: "read_note_excerpt",
+        target: target ?? config.defaultTarget,
+        paths: [reference],
+        maxExcerptChars: max_excerpt_chars,
+        maxSummaryChars: max_summary_chars,
+        maxHeadings: max_headings
+      });
+
+      try {
+        const { targetName, service } = resolveTarget(target);
+        const safePath = service.resolveReadReference({ id, path });
+        const output = await service.readNoteExcerpt(safePath, {
+          maxExcerptChars: max_excerpt_chars,
+          maxSummaryChars: max_summary_chars,
+          maxHeadings: max_headings
+        });
+        logEvent("info", "tool_completed", {
+          requestId,
+          tool: "read_note_excerpt",
+          result: "success",
+          target: targetName,
+          paths: [output.path],
+          headings: output.headings.length
+        });
+        return withStructuredContent({
+          target: targetName,
+          ...output
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "read_note_excerpt failed";
+        logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
+          requestId,
+          tool: "read_note_excerpt",
+          result: isRefusalError(error) ? "refusal" : "error",
+          target: target ?? config.defaultTarget,
+          paths: [reference],
+          error: message
+        });
+        return toolError(message);
+      }
+    }
+  );
+
+  server.registerTool(
+    "search",
+    {
+      title: "Search vault documents",
+      description:
+        "OpenAI-compatible document search across the vault. For interactive workflows prefer search_notes instead — it returns richer metadata and avoids rereading full note bodies.",
+      inputSchema: {
+        query: z.string()
+      },
+      annotations: {
+        readOnlyHint: true
+      }
+    },
+    async ({ query }) => {
+      const requestId = randomUUID();
+      logEvent("info", "tool_invoked", {
+        requestId,
+        tool: "search",
+        target: config.defaultTarget,
+        paths: ["."],
+        limit: 10
+      });
+
+      try {
+        const { targetName, service } = resolveTarget();
+        const output = await service.searchOpenAI(query, 10);
+        logEvent("info", "tool_completed", {
+          requestId,
+          tool: "search",
+          result: "success",
+          target: targetName,
+          paths: output.results.map((result) => result.path),
+          resultCount: output.results.length
+        });
+        return withJsonTextOnly(output);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "search failed";
+        logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
+          requestId,
+          tool: "search",
+          result: isRefusalError(error) ? "refusal" : "error",
+          target: config.defaultTarget,
+          paths: ["."],
+          error: message
+        });
+        return toolError(message);
+      }
+    }
+  );
+
+  server.registerTool(
+    "fetch",
+    {
+      title: "Fetch vault document",
+      description:
+        "Returns the full note text as an OpenAI-compatible payload. Costly — loads the complete document. Prefer read_note_excerpt for exploration and use this only when the full body is required.",
+      inputSchema: {
+        id: z.string()
+      },
+      annotations: {
+        readOnlyHint: true
+      }
+    },
+    async ({ id }) => {
+      const requestId = randomUUID();
+      logEvent("info", "tool_invoked", {
+        requestId,
+        tool: "fetch",
+        target: config.defaultTarget,
+        paths: [id]
+      });
+
+      try {
+        const { targetName, service } = resolveTarget();
+        const output = await service.fetchOpenAI(id);
+        logEvent("info", "tool_completed", {
+          requestId,
+          tool: "fetch",
+          result: "success",
+          target: targetName,
+          paths: [output.path]
+        });
+        return withJsonTextOnly(output);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "fetch failed";
+        logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
+          requestId,
+          tool: "fetch",
+          result: isRefusalError(error) ? "refusal" : "error",
+          target: config.defaultTarget,
+          paths: [id],
+          error: message
+        });
+        return toolError(message);
+      }
+    }
+  );
+
+  server.registerTool(
+    "list_notes",
+    {
+      title: "List vault notes",
+      description: "Lists readable markdown notes under a root to help navigate the vault.",
+      inputSchema: {
+        target: optionalTargetSchema,
+        root: z.string().optional(),
+        limit: z.number().int().min(1).max(200).default(50)
+      },
+      outputSchema: listNotesOutputSchema,
+      annotations: {
+        readOnlyHint: true
+      }
+    },
+    async ({ target, root, limit }) => {
+      const requestId = randomUUID();
+      logEvent("info", "tool_invoked", {
+        requestId,
+        tool: "list_notes",
+        target: target ?? config.defaultTarget,
+        paths: [root ?? "."],
+        limit
+      });
+
+      try {
+        const { targetName, service } = resolveTarget(target);
+        const output = await service.listNotes(root, limit);
+        logEvent("info", "tool_completed", {
+          requestId,
+          tool: "list_notes",
+          result: "success",
+          target: targetName,
+          paths: [output.root],
+          resultCount: output.results.length
+        });
+        return withStructuredContent({
+          target: targetName,
+          ...output
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "list_notes failed";
+        logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
+          requestId,
+          tool: "list_notes",
+          result: isRefusalError(error) ? "refusal" : "error",
+          target: target ?? config.defaultTarget,
+          paths: [root ?? "."],
           error: message
         });
         return toolError(message);
@@ -162,7 +527,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     "search_notes",
     {
       title: "Search Obsidian notes",
-      description: "Searches readable notes under selected roots.",
+      description:
+        "Searches readable notes under selected roots and returns scored results with snippets. Prefer this over search for interactive workflows — returns richer metadata without loading full note bodies.",
       inputSchema: {
         target: optionalTargetSchema,
         query: z.string(),
@@ -207,6 +573,243 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           result: isRefusalError(error) ? "refusal" : "error",
           target: target ?? config.defaultTarget,
           paths: roots ?? ["."],
+          error: message
+        });
+        return toolError(message);
+      }
+    }
+  );
+
+  server.registerTool(
+    "create_folder",
+    {
+      title: "Create an Obsidian folder",
+      description:
+        "Creates a folder in the vault through the policy-checked git branch, commit, push, and pull request workflow.",
+      inputSchema: {
+        target: optionalTargetSchema,
+        path: z.string(),
+        title: z.string().optional(),
+        base_branch: z.string().default("main"),
+        branch_name: z.string().optional(),
+        commit_message: z.string().optional(),
+        pr_body: z.string().optional()
+      },
+      outputSchema: createFolderOutputSchema
+    },
+    async ({ target, path, title, base_branch, branch_name, commit_message, pr_body }) => {
+      const requestId = randomUUID();
+      logEvent("info", "tool_invoked", {
+        requestId,
+        tool: "create_folder",
+        target: target ?? config.defaultTarget,
+        paths: [path],
+        branch: branch_name,
+        baseBranch: base_branch
+      });
+
+      try {
+        const { targetName, service } = resolveTarget(target);
+        const output = await service.createFolder({
+          path,
+          ...(title ? { title } : {}),
+          ...(base_branch ? { base_branch } : {}),
+          ...(branch_name ? { branch_name } : {}),
+          ...(commit_message ? { commit_message } : {}),
+          ...(pr_body ? { pr_body } : {})
+        });
+        logEvent("info", "tool_completed", {
+          requestId,
+          tool: "create_folder",
+          result: "success",
+          target: targetName,
+          paths: [output.path, output.placeholder_path],
+          branch: output.branch,
+          pullRequest: output.pull_request.url
+        });
+        return withStructuredContent({
+          target: targetName,
+          ...output
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "create_folder failed";
+        logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
+          requestId,
+          tool: "create_folder",
+          result: isRefusalError(error) ? "refusal" : "error",
+          target: target ?? config.defaultTarget,
+          paths: [path],
+          branch: branch_name,
+          error: message
+        });
+        return toolError(message);
+      }
+    }
+  );
+
+  server.registerTool(
+    "rename_note",
+    {
+      title: "Rename an Obsidian note",
+      description:
+        "Renames a note by changing its full path, including optional directory move, through the policy-checked git branch, commit, push, and pull request workflow.",
+      inputSchema: {
+        target: optionalTargetSchema,
+        id: z.string().optional(),
+        path: z.string().optional(),
+        destination_path: z.string(),
+        expected_sha256: z.string().optional(),
+        title: z.string().optional(),
+        base_branch: z.string().default("main"),
+        branch_name: z.string().optional(),
+        commit_message: z.string().optional(),
+        pr_body: z.string().optional()
+      },
+      outputSchema: renameNoteOutputSchema
+    },
+    async ({
+      target,
+      id,
+      path,
+      destination_path,
+      expected_sha256,
+      title,
+      base_branch,
+      branch_name,
+      commit_message,
+      pr_body
+    }) => {
+      const requestId = randomUUID();
+      const reference = id ?? path ?? "<missing>";
+      logEvent("info", "tool_invoked", {
+        requestId,
+        tool: "rename_note",
+        target: target ?? config.defaultTarget,
+        paths: [reference, destination_path],
+        branch: branch_name,
+        baseBranch: base_branch
+      });
+
+      try {
+        const { targetName, service } = resolveTarget(target);
+        const output = await service.renameNote({
+          ...(id ? { id } : {}),
+          ...(path ? { path } : {}),
+          destination_path,
+          ...(expected_sha256 ? { expected_sha256 } : {}),
+          ...(title ? { title } : {}),
+          ...(base_branch ? { base_branch } : {}),
+          ...(branch_name ? { branch_name } : {}),
+          ...(commit_message ? { commit_message } : {}),
+          ...(pr_body ? { pr_body } : {})
+        });
+        logEvent("info", "tool_completed", {
+          requestId,
+          tool: "rename_note",
+          result: "success",
+          target: targetName,
+          paths: [output.previous_path, output.path],
+          branch: output.branch,
+          pullRequest: output.pull_request.url
+        });
+        return withStructuredContent({
+          target: targetName,
+          ...output
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "rename_note failed";
+        logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
+          requestId,
+          tool: "rename_note",
+          result: isRefusalError(error) ? "refusal" : "error",
+          target: target ?? config.defaultTarget,
+          paths: [reference, destination_path],
+          branch: branch_name,
+          error: message
+        });
+        return toolError(message);
+      }
+    }
+  );
+
+  server.registerTool(
+    "move_note",
+    {
+      title: "Move an Obsidian note",
+      description:
+        "Moves a note to another directory through the policy-checked git branch, commit, push, and pull request workflow.",
+      inputSchema: {
+        target: optionalTargetSchema,
+        id: z.string().optional(),
+        path: z.string().optional(),
+        destination_dir: z.string(),
+        expected_sha256: z.string().optional(),
+        title: z.string().optional(),
+        base_branch: z.string().default("main"),
+        branch_name: z.string().optional(),
+        commit_message: z.string().optional(),
+        pr_body: z.string().optional()
+      },
+      outputSchema: moveNoteOutputSchema
+    },
+    async ({
+      target,
+      id,
+      path,
+      destination_dir,
+      expected_sha256,
+      title,
+      base_branch,
+      branch_name,
+      commit_message,
+      pr_body
+    }) => {
+      const requestId = randomUUID();
+      const reference = id ?? path ?? "<missing>";
+      logEvent("info", "tool_invoked", {
+        requestId,
+        tool: "move_note",
+        target: target ?? config.defaultTarget,
+        paths: [reference, destination_dir],
+        branch: branch_name,
+        baseBranch: base_branch
+      });
+
+      try {
+        const { targetName, service } = resolveTarget(target);
+        const output = await service.moveNote({
+          ...(id ? { id } : {}),
+          ...(path ? { path } : {}),
+          destination_dir,
+          ...(expected_sha256 ? { expected_sha256 } : {}),
+          ...(title ? { title } : {}),
+          ...(base_branch ? { base_branch } : {}),
+          ...(branch_name ? { branch_name } : {}),
+          ...(commit_message ? { commit_message } : {}),
+          ...(pr_body ? { pr_body } : {})
+        });
+        logEvent("info", "tool_completed", {
+          requestId,
+          tool: "move_note",
+          result: "success",
+          target: targetName,
+          paths: [output.previous_path, output.path],
+          branch: output.branch,
+          pullRequest: output.pull_request.url
+        });
+        return withStructuredContent({
+          target: targetName,
+          ...output
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "move_note failed";
+        logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
+          requestId,
+          tool: "move_note",
+          result: isRefusalError(error) ? "refusal" : "error",
+          target: target ?? config.defaultTarget,
+          paths: [reference, destination_dir],
+          branch: branch_name,
           error: message
         });
         return toolError(message);

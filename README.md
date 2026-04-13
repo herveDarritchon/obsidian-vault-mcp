@@ -5,10 +5,10 @@ Serveur MCP distant minimal pour un vault Obsidian, avec policy côté serveur e
 ## Ce que fait cette V1
 
 - expose un endpoint MCP distant en Streamable HTTP sur `POST /mcp`
-- fournit exactement 4 tools: `read_note`, `search_notes`, `update_note_draft`, `propose_change`
+- fournit 12 tools: `search`, `fetch`, `list_notes`, `read_note`, `read_note_excerpt`, `read_section`, `search_notes`, `create_folder`, `rename_note`, `move_note`, `update_note_draft`, `propose_change`
 - charge une policy YAML et bloque les chemins interdits côté serveur
 - ouvre une PR GitHub après écriture dans un worktree git temporaire, pour éviter de salir le clone principal du vault
-- laisse `update_note_draft` sans effet de bord et réserve `propose_change` au flux d’écriture
+- laisse `update_note_draft` sans effet de bord et réserve `create_folder`, `rename_note`, `move_note` et `propose_change` au flux d’écriture via PR
 
 ## Prérequis
 
@@ -16,6 +16,35 @@ Serveur MCP distant minimal pour un vault Obsidian, avec policy côté serveur e
 - un clone git local du repo du vault
 - un remote `origin` configuré sur ce clone
 - un token GitHub capable d’ouvrir une pull request sur le repo cible
+
+## Disclaimer I/O hors vault
+
+Le serveur vise à limiter les lectures et écritures de contenu au `VAULT_REPO_ROOT` configuré et à ses sous-répertoires. En revanche, certains accès techniques restent aujourd’hui en dehors du vault. Cette liste sert de trace explicite pour les utilisateurs et de backlog de durcissement pour les versions futures.
+
+Ce qui est déjà confiné :
+
+- les lectures de notes, sections, excerpts et recherches markdown restent limitées au vault ;
+- les écritures de contenu via `create_folder`, `move_note`, `rename_note` et `propose_change` sont ré-ancrées sur la racine du vault, y compris quand le vault est un sous-répertoire d’un repo Git ;
+- les chemins avec échappement (`..`, chemins absolus injectés, etc.) sont refusés côté serveur.
+
+Lectures qui peuvent rester hors vault :
+
+- lecture des fichiers de configuration du serveur, par exemple `.env`, `VAULT_TARGETS_FILE`, `VAULT_TARGET_MANIFEST_FILE` et `VAULT_POLICY_FILE` ;
+- lecture d’un fichier d’environnement référencé par un manifeste via `envFile` ;
+- lecture des métadonnées Git du dépôt via `git` et `.git`, notamment pour résoudre la racine du repo, vérifier les branches, créer des worktrees et préparer les commits ;
+- appels réseau vers GitHub API et vers le remote `origin` pendant les opérations de PR.
+
+Écritures qui peuvent rester hors vault :
+
+- création puis suppression d’un worktree Git temporaire dans le répertoire temporaire système, avec un chemin du type `/tmp/obsidian-vault-mcp-*` ;
+- écritures Git techniques dans les métadonnées du dépôt, par exemple `.git/worktrees`, refs locales, index, objets, commits et état de branche ;
+- push réseau vers le remote Git et création de pull request côté GitHub.
+
+Implication pratique :
+
+- le contenu markdown manipulé par le MCP doit rester dans le vault ;
+- en revanche, le workflow Git/PR s’appuie encore sur des écritures temporaires et des métadonnées hors vault ;
+- si l’objectif devient “zéro lecture/écriture hors vault”, il faudra remplacer ou isoler davantage ce workflow technique.
 
 ## Installation
 
@@ -57,7 +86,7 @@ Le chemin le plus simple est de garder le serveur en mode mono-cible, puis de re
 3. Prépare la vraie policy YAML du vault.
 4. Copie [.env.example](/Users/hervedarritchon/Documents/obsidian-vault-mcp/.env.example) vers `.env`.
 5. Renseigne `VAULT_REPO_ROOT`, `VAULT_POLICY_FILE`, `GITHUB_OWNER`, `GITHUB_REPO`, `GITHUB_TOKEN` pour le vrai vault.
-6. Lance d’abord le serveur localement et teste uniquement `read_note` et `search_notes`.
+6. Lance d’abord le serveur localement et teste d’abord `search`, `fetch`, `read_note` et `search_notes`.
 7. Teste ensuite `update_note_draft` sur un chemin `propose_only`.
 8. Termine par un `propose_change` très petit sur une zone `write_via_pr`.
 
@@ -101,7 +130,7 @@ Policy initiale de prod :
 
 - `write_via_pr` : `02-Work/TOR2e/working/**`, `02-Work/TOR2e/scratch/**`, `02-Work/TOR2e/specs/**`, `02-Work/Drafts/**`
 - `propose_only` : `README.md`, `02-Work/TOR2e/reference/**`, `03-Knowledge/**`, `04-Archive/**`, `90-Templates/**`
-- `deny` : `Private/**`, `Secrets/**`, `99-System/policy/**`, `99-System/prompts/**`, `99-System/schemas/**`
+- `deny` : `Private/**`, `Secrets/**`, `.config/**`, `99-System/policy/**`, `99-System/prompts/**`, `99-System/schemas/**`
 - tout le reste est refusé par `defaults`
 
 Ça te donne une première mise en prod prudente : ChatGPT peut travailler sur le périmètre TOR2e utile, sans pouvoir écrire partout dans le vault.
@@ -149,9 +178,76 @@ targets:
       repo: your-real-vault-repo
 ```
 
+### Mode recommandé : manifeste porté par le vault
+
+Si tu veux que le serveur MCP reste le plus agnostique possible, tu peux maintenant mettre la configuration métier dans le vault lui-même.
+
+Option mono-vault :
+
+```dotenv
+VAULT_TARGET_MANIFEST_FILE=/absolute/path/to/your-vault/.config/mcp/vault-target.yaml
+VAULT_TARGET=real-vault
+GITHUB_TOKEN=github_pat_xxx
+```
+
+Exemple de manifeste dans le vault :
+
+```yaml
+version: 1
+policyFile: .config/policy/vault-access-policy.yaml
+envFile: .config/mcp/.env.local
+github:
+  owner: your-user-or-org
+  repo: your-real-vault-repo
+  defaultBranch: main
+githubTokenEnv: GITHUB_TOKEN
+gitAuthorName: Obsidian MCP Bot
+gitAuthorEmail: bot@example.com
+maxChangeFiles: 5
+maxTotalLineDelta: 400
+```
+
+Le serveur :
+
+- découvre automatiquement le `repoRoot` en remontant jusqu’au repo Git qui contient le manifeste ;
+- résout `policyFile` relativement à la racine du vault ;
+- peut charger un fichier d’environnement spécifique au vault via `envFile` ;
+- lit les métadonnées GitHub et les limites d’écriture depuis le manifeste ;
+- garde les secrets hors du vault versionné en utilisant `githubTokenEnv`.
+
+Convention recommandée dans le vault :
+
+- `.config/mcp/vault-target.yaml` pour le manifeste bootstrap
+- `.config/mcp/.env.local` ou `.config/mcp/.env.e2e` pour les variables locales propres à ce vault
+- `.config/policy/vault-access-policy.yaml` pour la policy d’accès
+- `.config/secrets/` seulement si ce répertoire n’est pas versionné ; sinon préfère un secret store local et `githubTokenEnv`
+
+Option multi-vault :
+
+```yaml
+version: 1
+defaultTarget: real-vault
+targets:
+  real-vault:
+    manifestFile: /absolute/path/to/your-vault/.config/mcp/vault-target.yaml
+
+  sandbox:
+    manifestFile: /absolute/path/to/your-sandbox-vault/.config/mcp/vault-target.yaml
+```
+
+Le catalogue côté MCP devient alors un simple bootstrap de découverte, et la configuration spécifique vit dans chaque vault.
+
+Important :
+
+- il est raisonnable de stocker la policy et les métadonnées d’intégration dans le vault ;
+- il est déconseillé d’y stocker les secrets GitHub eux-mêmes si le vault est versionné ;
+- préfère une référence de type `githubTokenEnv` vers une variable d’environnement ou un secret store local.
+
 ### Comment cibler un repo précis
 
-Les 4 tools acceptent maintenant un champ optionnel `target`.
+Les 10 tools “vault natifs” acceptent maintenant un champ optionnel `target`.
+
+Les tools OpenAI-compatibles `search` et `fetch` restent volontairement mono-cible côté appel: ils utilisent la target par défaut du serveur pour rester alignés avec les workflows ChatGPT/OpenAI qui attendent une source documentaire unique.
 
 Si tu ne passes rien :
 
@@ -189,11 +285,18 @@ Prépare d’abord un fichier `.env.e2e` à partir de [.env.e2e.example](/Users/
 npm run test:e2e:real
 ```
 
-Le script vérifie maintenant 5 choses avant même le flux PR:
+Si `VAULT_TARGET_MANIFEST_FILE` pointe vers un manifeste dans le vault, le harness E2E cherchera par défaut son fichier `.env.e2e` à côté de ce manifeste, par exemple :
+
+- `/absolute/path/to/your-vault/.config/mcp/.env.e2e`
+
+Tu peux toujours forcer un autre chemin avec `E2E_ENV_FILE`.
+
+Le script vérifie maintenant le flux de lecture avant même le flux PR:
 
 - démarre le serveur MCP localement sur un port éphémère ;
 - appelle les tools via un client MCP HTTP ;
-- valide `read_note`, `search_notes` et `update_note_draft` sur une vraie note ;
+- valide `search`, `fetch`, `read_note`, `read_note_excerpt`, `list_notes`, `search_notes` et `update_note_draft` sur une vraie note ;
+- valide `read_section` sur une note/section stable dédiée ;
 - vérifie qu’une lecture sur une zone blacklistée est bien refusée ;
 - vérifie qu’un `expected_sha256` périmé est bien rejeté ;
 - exécute ensuite `propose_change` si `E2E_SKIP_PROPOSE_CHANGE=false` ;
@@ -238,6 +341,12 @@ Les variables clés sont :
 - `VAULT_REPO_ROOT` : clone local du repo sandbox
 - `VAULT_POLICY_FILE` : policy YAML utilisée pour l’E2E
 - `E2E_NOTE_PATH` : note réelle lue, draftée puis modifiée via PR
+- `E2E_EXCERPT_PATH` : note lue via `read_note_excerpt`
+- `E2E_SUMMARY_MAX_CHARS` : taille max du résumé retourné par `read_note_excerpt`
+- `E2E_EXCERPT_MAX_CHARS` : taille max de l’extrait retourné par `read_note_excerpt`
+- `E2E_LIST_ROOT` : racine listée via `list_notes`, qui doit contenir `E2E_NOTE_PATH`
+- `E2E_SECTION_PATH` : note stable utilisée pour tester `read_section`
+- `E2E_SECTION_HEADING` : heading exact lu via `read_section`
 - `E2E_BLACKLISTED_PATH` : chemin volontairement interdit, utilisé pour vérifier le refus policy
 - `E2E_SKIP_PROPOSE_CHANGE=true` : mode pré-PR, utile pour un premier passage sans GitHub
 - `E2E_SKIP_PROPOSE_CHANGE=false` : mode complet, avec branche, push et PR
@@ -256,7 +365,13 @@ GITHUB_TOKEN=github_pat_xxx
 
 E2E_NOTE_PATH=Obsician MCP E2E Vault/Bienvenue.md
 E2E_SEARCH_ROOT=Obsician MCP E2E Vault
+E2E_EXCERPT_PATH=Obsician MCP E2E Vault/Bienvenue.md
+E2E_SUMMARY_MAX_CHARS=120
+E2E_EXCERPT_MAX_CHARS=220
+E2E_LIST_ROOT=Obsician MCP E2E Vault
 E2E_SEARCH_QUERY=coffre
+E2E_SECTION_PATH=README.md
+E2E_SECTION_HEADING=# obsidian-mcp-e2e-vault
 E2E_BLACKLISTED_PATH=Private/e2e-secret.md
 E2E_SKIP_PROPOSE_CHANGE=false
 E2E_CLEANUP=false
@@ -292,6 +407,48 @@ Les règles `deny` sont absolues. Ensuite, la dernière règle compatible la plu
 
 ## Contrat des tools
 
+### `search`
+
+Entrée:
+
+```json
+{
+  "query": "Chronicle tab"
+}
+```
+
+Retour:
+
+- bloc texte JSON unique
+- format OpenAI-compatible: `results[]` avec `id`, `title`, `url`, `text`
+- `id` est maintenant un identifiant stable opaque, distinct du chemin
+- chaque résultat expose aussi `path` et `excerpt` explicitement
+- le ranking pondère le `title`, les `aliases`, les `tags`, les `headings`, le `frontmatter`, le `path` et le corps de note
+- le snippet peut donc refléter un match de type `Title:`, `Alias:`, `Tag:`, `Heading:` ou `Frontmatter:`
+- la recherche combine match lexical exact et matching souple local sur les variantes de termes
+- utilise toujours la target par défaut du serveur
+
+### `fetch`
+
+Entrée:
+
+```json
+{
+  "id": "02-Work/TOR2e/specs/community.md"
+}
+```
+
+Retour:
+
+- bloc texte JSON unique
+- format OpenAI-compatible: `id`, `title`, `text`, `url`, `metadata`
+- `id` reste stable entre `search` et `fetch`
+- le document expose aussi `path` et `content` explicitement
+- `metadata` expose aussi `aliases`, `tags`, `headings` et le `frontmatter` parsé
+- accepte aussi une GitHub blob URL générée par `search`
+- accepte aussi un ancien chemin brut pour compatibilité
+- utilise toujours la target par défaut du serveur
+
 ### `read_note`
 
 Entrée:
@@ -302,6 +459,19 @@ Entrée:
   "path": "02-Work/TOR2e/specs/community.md"
 }
 ```
+
+Ou:
+
+```json
+{
+  "target": "real-vault",
+  "id": "obsidian-vault:v1:real-vault:..."
+}
+```
+
+Retour enrichi:
+
+- `id`, `title`, `path`, `url`, `sha256`, `content`, `policy`
 
 ### `search_notes`
 
@@ -315,6 +485,82 @@ Entrée:
   "limit": 10
 }
 ```
+
+Retour enrichi:
+
+- `results[]` avec `id`, `title`, `path`, `url`, `snippet`, `score`
+
+### `read_section`
+
+Entrée:
+
+```json
+{
+  "target": "real-vault",
+  "path": "02-Work/TOR2e/specs/community.md",
+  "section_heading": "## Chronicle tab"
+}
+```
+
+Ou:
+
+```json
+{
+  "target": "real-vault",
+  "id": "obsidian-vault:v1:real-vault:...",
+  "section_heading": "## Chronicle tab"
+}
+```
+
+Retour enrichi:
+
+- `id`, `title`, `path`, `url`, `section_heading`, `note_sha256`, `content`, `policy`
+
+### `read_note_excerpt`
+
+Entrée:
+
+```json
+{
+  "target": "real-vault",
+  "path": "02-Work/TOR2e/specs/community.md",
+  "max_summary_chars": 240,
+  "max_excerpt_chars": 800,
+  "max_headings": 6
+}
+```
+
+Ou:
+
+```json
+{
+  "target": "real-vault",
+  "id": "obsidian-vault:v1:real-vault:...",
+  "max_summary_chars": 240,
+  "max_excerpt_chars": 800,
+  "max_headings": 6
+}
+```
+
+Retour enrichi:
+
+- `id`, `title`, `path`, `url`, `note_sha256`, `summary`, `excerpt`, `headings`, `policy`
+
+### `list_notes`
+
+Entrée:
+
+```json
+{
+  "target": "real-vault",
+  "root": "02-Work/TOR2e/working",
+  "limit": 50
+}
+```
+
+Retour enrichi:
+
+- `results[]` avec `id`, `title`, `path`, `url`
 
 ### `update_note_draft`
 
@@ -330,6 +576,92 @@ Entrée:
   "expected_sha256": "..."
 }
 ```
+
+### `move_note`
+
+Entrée:
+
+```json
+{
+  "target": "real-vault",
+  "path": "02-Work/TOR2e/specs/community.md",
+  "destination_dir": "02-Work/Drafts",
+  "expected_sha256": "...",
+  "base_branch": "main"
+}
+```
+
+Ou:
+
+```json
+{
+  "target": "real-vault",
+  "id": "obsidian-vault:v1:real-vault:...",
+  "destination_dir": "02-Work/Drafts"
+}
+```
+
+Retour enrichi:
+
+- `id`, `title`, `previous_path`, `path`, `url`, `sha256`, `branch`, `commit_sha`, `pull_request`
+- conserve le nom du fichier et déplace la note vers `destination_dir`
+- vérifie la policy sur le chemin source et le chemin de destination
+- ouvre une PR dédiée au déplacement
+- refuse si la note de destination existe déjà
+- refuse si la note n’existe pas sur la `base_branch` choisie
+
+### `create_folder`
+
+Entrée:
+
+```json
+{
+  "target": "real-vault",
+  "path": "02-Work/TOR2e/new-space",
+  "base_branch": "main"
+}
+```
+
+Retour enrichi:
+
+- `path`, `placeholder_path`, `url`, `branch`, `commit_sha`, `pull_request`
+- crée le répertoire demandé via un fichier de maintien `.gitkeep`
+- vérifie la policy sur le chemin du placeholder
+- ouvre une PR dédiée à la création
+- refuse si le répertoire existe déjà
+
+### `rename_note`
+
+Entrée:
+
+```json
+{
+  "target": "real-vault",
+  "path": "02-Work/TOR2e/specs/community.md",
+  "destination_path": "02-Work/Drafts/community-v2.md",
+  "expected_sha256": "...",
+  "base_branch": "main"
+}
+```
+
+Ou:
+
+```json
+{
+  "target": "real-vault",
+  "id": "obsidian-vault:v1:real-vault:...",
+  "destination_path": "02-Work/Drafts/community-v2.md"
+}
+```
+
+Retour enrichi:
+
+- `id`, `title`, `previous_path`, `path`, `url`, `sha256`, `branch`, `commit_sha`, `pull_request`
+- permet de changer le nom du fichier, le répertoire, ou les deux
+- vérifie la policy sur le chemin source et le chemin de destination
+- ouvre une PR dédiée au renommage
+- refuse si la note de destination existe déjà
+- refuse si la note n’existe pas sur la `base_branch` choisie
 
 ### `propose_change`
 
@@ -357,8 +689,11 @@ Entrée:
 
 ## Notes de conception
 
-- `search_notes` fait un scan markdown simple et portable, sans index dédié
-- `replace_section` supporte les headings ATX (`#`, `##`, `###`, etc.)
+- `search_notes` et `search` font un scan markdown structuré, sans index externe, en exploitant `frontmatter`, `aliases`, `tags` et `headings`
+- la recherche est hybride au sens “lexical + matching souple local”, mais n’embarque pas encore d’index vectoriel ni d’embeddings
+- `search` et `fetch` fournissent une couche de compatibilité OpenAI pour les workflows documentaires
+- `read_note_excerpt` produit un résumé déterministe côté serveur, sans dépendre d’un LLM externe
+- `read_section` et `replace_section` supportent les headings ATX (`#`, `##`, `###`, etc.)
 - `propose_change` refuse les branches déjà existantes pour éviter les collisions silencieuses
 - le serveur est stateless côté transport MCP: un `POST` par appel, pas de session longue
 
