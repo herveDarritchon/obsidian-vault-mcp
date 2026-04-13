@@ -186,8 +186,9 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     version: "0.1.0"
   });
   const resolveTarget = createTargetResolver(services, config.defaultTarget);
+  const fullProfile = config.toolProfile === "full";
 
-  server.registerTool(
+  if (fullProfile) server.registerTool(
     "read_note",
     {
       title: "Read Obsidian note",
@@ -367,7 +368,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     }
   );
 
-  server.registerTool(
+  if (fullProfile) server.registerTool(
     "search",
     {
       title: "Search vault documents",
@@ -417,7 +418,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     }
   );
 
-  server.registerTool(
+  if (fullProfile) server.registerTool(
     "fetch",
     {
       title: "Fetch vault document",
