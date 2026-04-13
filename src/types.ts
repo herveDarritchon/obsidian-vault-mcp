@@ -68,7 +68,6 @@ export interface OpenAISearchResult {
   id: string;
   title: string;
   path: string;
-  excerpt: string;
   url: string;
   text: string;
 }

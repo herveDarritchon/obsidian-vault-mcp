@@ -703,7 +703,6 @@ export class VaultService {
           id: note.id,
           title: note.title,
           path: note.path,
-          excerpt: result.snippet,
           url: note.url,
           text: result.snippet
         };
