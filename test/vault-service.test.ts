@@ -376,8 +376,8 @@ test("searchOpenAI returns OpenAI-compatible document results", async () => {
   );
   assert.equal(output.results[0]?.title, "Community");
   assert.equal(output.results[0]?.path, "02-Work/TOR2e/specs/community.md");
-  assert.match(output.results[0]?.excerpt ?? "", /Initial content/);
   assert.match(output.results[0]?.text ?? "", /Initial content/);
+  assert.equal("excerpt" in (output.results[0] ?? {}), false);
   assert.equal(
     output.results[0]?.url,
     "https://github.com/example/vault/blob/main/02-Work/TOR2e/specs/community.md"
