@@ -191,7 +191,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     "read_note",
     {
       title: "Read Obsidian note",
-      description: "Reads a note from the vault after policy checks.",
+      description:
+        "Returns the full content of a note. Costly — loads the entire document. Prefer read_note_excerpt for initial exploration and use this only when the full text is required.",
       inputSchema: {
         target: optionalTargetSchema,
         id: z.string().optional(),
@@ -246,7 +247,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     "read_section",
     {
       title: "Read note section",
-      description: "Reads a specific markdown section from a note after policy checks.",
+      description:
+        "Returns a single markdown section from a note. Cheaper than read_note when only one section is needed. Use read_note_excerpt first to discover available headings before calling this.",
       inputSchema: {
         target: optionalTargetSchema,
         id: z.string().optional(),
@@ -305,7 +307,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     "read_note_excerpt",
     {
       title: "Read note excerpt",
-      description: "Reads a compact summary and excerpt from a note after policy checks.",
+      description:
+        "Returns a compact summary, excerpt, and heading list for a note. Start here before read_note or read_section — this is the preferred low-cost way to understand a note's content and structure.",
       inputSchema: {
         target: optionalTargetSchema,
         id: z.string().optional(),
@@ -372,7 +375,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     {
       title: "Search vault documents",
       description:
-        "Searches readable vault documents and returns OpenAI-compatible document search results.",
+        "OpenAI-compatible document search across the vault. For interactive workflows prefer search_notes instead — it returns richer metadata and avoids rereading full note bodies.",
       inputSchema: {
         query: z.string()
       },
@@ -422,7 +425,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     {
       title: "Fetch vault document",
       description:
-        "Fetches the full contents of a readable vault document by id and returns an OpenAI-compatible document payload.",
+        "Returns the full note text as an OpenAI-compatible payload. Costly — loads the complete document. Prefer read_note_excerpt for exploration and use this only when the full body is required.",
       inputSchema: {
         id: z.string()
       },
@@ -524,7 +527,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     "search_notes",
     {
       title: "Search Obsidian notes",
-      description: "Searches readable notes under selected roots.",
+      description:
+        "Searches readable notes under selected roots and returns scored results with snippets. Prefer this over search for interactive workflows — returns richer metadata without loading full note bodies.",
       inputSchema: {
         target: optionalTargetSchema,
         query: z.string(),
