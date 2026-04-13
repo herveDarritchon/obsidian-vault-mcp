@@ -1,18 +1,25 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 import type { VaultTargetConfig } from "../src/config.js";
 import { RefusalError } from "../src/errors.js";
 import { VaultService } from "../src/vault-service.js";
 
 const policyPath = fileURLToPath(new URL("../config/vault-access-policy.example.yaml", import.meta.url));
+const execFileAsync = promisify(execFile);
 
 async function createVaultFixture() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "obsidian-vault-fixture-"));
+
+  await git(["init", "-b", "main"], root);
+  await git(["config", "user.name", "Test Bot"], root);
+  await git(["config", "user.email", "bot@example.com"], root);
 
   await fs.mkdir(path.join(root, "02-Work/TOR2e/specs"), { recursive: true });
   await fs.mkdir(path.join(root, "02-Work/Drafts"), { recursive: true });
@@ -61,8 +68,107 @@ async function createVaultFixture() {
     "utf8"
   );
   await fs.writeFile(path.join(root, "Secrets/token.md"), "super-secret\n", "utf8");
+  await git(["add", "."], root);
+  await git(["commit", "-m", "Initial fixture"], root);
 
   return root;
+}
+
+async function git(args: string[], cwd: string): Promise<string> {
+  const { stdout } = await execFileAsync("git", args, { cwd });
+  return stdout.trim();
+}
+
+async function gitShow(gitDirectory: string, revisionPath: string): Promise<string> {
+  const { stdout } = await execFileAsync("git", [`--git-dir=${gitDirectory}`, "show", revisionPath]);
+  return stdout.trim();
+}
+
+async function gitPathExists(gitDirectory: string, revisionPath: string): Promise<boolean> {
+  try {
+    await execFileAsync("git", [`--git-dir=${gitDirectory}`, "cat-file", "-e", revisionPath]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function mockGitHubPullRequests(): () => void {
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = (async (input, init) => {
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.toString()
+          : input.url;
+
+    if (url.includes("/pulls?")) {
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    if (url.endsWith("/pulls") && (init?.method ?? "GET") === "POST") {
+      return new Response(JSON.stringify({ number: 42, html_url: "https://example.test/pr/42" }), {
+        status: 201,
+        headers: { "content-type": "application/json" }
+      });
+    }
+
+    return new Response("not found", { status: 404 });
+  }) as typeof fetch;
+
+  return () => {
+    globalThis.fetch = originalFetch;
+  };
+}
+
+async function createNestedGitVaultFixture() {
+  const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "obsidian-vault-nested-"));
+  const originPath = path.join(workspaceRoot, "origin.git");
+  const repoRoot = path.join(workspaceRoot, "repo");
+  const vaultRepoRoot = path.join(repoRoot, "vaults/personal");
+
+  await git(["init", "--bare", originPath], workspaceRoot);
+  await fs.mkdir(repoRoot, { recursive: true });
+  await git(["init", "-b", "main"], repoRoot);
+  await git(["config", "user.name", "Test Bot"], repoRoot);
+  await git(["config", "user.email", "bot@example.com"], repoRoot);
+
+  await fs.mkdir(path.join(vaultRepoRoot, "02-Work/TOR2e/specs"), { recursive: true });
+  await fs.mkdir(path.join(vaultRepoRoot, "02-Work/Drafts"), { recursive: true });
+  await fs.mkdir(path.join(vaultRepoRoot, "03-Knowledge/Concepts"), { recursive: true });
+
+  await fs.writeFile(
+    path.join(vaultRepoRoot, "02-Work/TOR2e/specs/community.md"),
+    "# Community\n\nInitial content.\n",
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(vaultRepoRoot, "02-Work/Drafts/launch-post.md"),
+    "# Launch post\n\nDraft text.\n",
+    "utf8"
+  );
+  await fs.writeFile(
+    path.join(vaultRepoRoot, "03-Knowledge/Concepts/memory.md"),
+    "# Memory\n\nReference material.\n",
+    "utf8"
+  );
+  await fs.writeFile(path.join(repoRoot, "outside-root.md"), "# Outside root\n", "utf8");
+
+  await git(["add", "."], repoRoot);
+  await git(["commit", "-m", "Initial commit"], repoRoot);
+  await git(["remote", "add", "origin", originPath], repoRoot);
+  await git(["push", "-u", "origin", "main"], repoRoot);
+
+  return {
+    originPath,
+    repoRoot,
+    vaultRepoRoot
+  };
 }
 
 function makeConfig(vaultRepoRoot: string, overrides: Partial<VaultTargetConfig> = {}): VaultTargetConfig {
@@ -629,4 +735,135 @@ test("propose-only paths allow draft generation but refuse propose_change", asyn
       }),
     (error: unknown) => error instanceof RefusalError && /Write denied by policy/.test(error.message)
   );
+});
+
+test("propose_change keeps content writes inside a nested vault root", async () => {
+  const restoreFetch = mockGitHubPullRequests();
+
+  try {
+    const fixture = await createNestedGitVaultFixture();
+    const service = await VaultService.create(
+      makeConfig(fixture.vaultRepoRoot, {
+        githubApiBaseUrl: "https://example.test/api/v3"
+      })
+    );
+
+    const output = await service.proposeChange({
+      title: "Update nested draft",
+      base_branch: "main",
+      branch_name: "ai/vault/update-nested-draft",
+      commit_message: "ai(vault): update nested draft",
+      pr_body: "Testing nested vault confinement.",
+      changes: [
+        {
+          path: "02-Work/Drafts/launch-post.md",
+          mode: "append",
+          content: "Added from nested vault.\n"
+        }
+      ]
+    });
+
+    assert.deepEqual(output.changed_files, ["02-Work/Drafts/launch-post.md"]);
+    assert.match(
+      await gitShow(
+        fixture.originPath,
+        `${output.branch}:vaults/personal/02-Work/Drafts/launch-post.md`
+      ),
+      /Added from nested vault\./
+    );
+    assert.equal(
+      await gitPathExists(fixture.originPath, `${output.branch}:02-Work/Drafts/launch-post.md`),
+      false
+    );
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("create_folder keeps placeholder creation inside a nested vault root", async () => {
+  const restoreFetch = mockGitHubPullRequests();
+
+  try {
+    const fixture = await createNestedGitVaultFixture();
+    const service = await VaultService.create(
+      makeConfig(fixture.vaultRepoRoot, {
+        githubApiBaseUrl: "https://example.test/api/v3"
+      })
+    );
+
+    const output = await service.createFolder({
+      path: "02-Work/Drafts/New Folder",
+      title: "Create nested folder",
+      base_branch: "main",
+      branch_name: "ai/vault/create-nested-folder",
+      commit_message: "ai(vault): create folder 02-Work/Drafts/New Folder",
+      pr_body: "Testing nested vault confinement."
+    });
+
+    assert.equal(output.placeholder_path, "02-Work/Drafts/New Folder/.gitkeep");
+    assert.equal(
+      await gitPathExists(
+        fixture.originPath,
+        `${output.branch}:vaults/personal/02-Work/Drafts/New Folder/.gitkeep`
+      ),
+      true
+    );
+    assert.equal(
+      await gitPathExists(
+        fixture.originPath,
+        `${output.branch}:02-Work/Drafts/New Folder/.gitkeep`
+      ),
+      false
+    );
+  } finally {
+    restoreFetch();
+  }
+});
+
+test("rename_note keeps relocations inside a nested vault root", async () => {
+  const restoreFetch = mockGitHubPullRequests();
+
+  try {
+    const fixture = await createNestedGitVaultFixture();
+    const service = await VaultService.create(
+      makeConfig(fixture.vaultRepoRoot, {
+        githubApiBaseUrl: "https://example.test/api/v3"
+      })
+    );
+
+    const output = await service.renameNote({
+      path: "02-Work/TOR2e/specs/community.md",
+      destination_path: "02-Work/Drafts/community-renamed.md",
+      title: "Rename nested note",
+      base_branch: "main",
+      branch_name: "ai/vault/rename-nested-note",
+      commit_message: "ai(vault): rename nested note",
+      pr_body: "Testing nested vault confinement."
+    });
+
+    assert.equal(output.path, "02-Work/Drafts/community-renamed.md");
+    assert.equal(
+      await gitPathExists(
+        fixture.originPath,
+        `${output.branch}:vaults/personal/02-Work/Drafts/community-renamed.md`
+      ),
+      true
+    );
+    assert.equal(
+      await gitPathExists(
+        fixture.originPath,
+        `${output.branch}:vaults/personal/02-Work/TOR2e/specs/community.md`
+      ),
+      false
+    );
+    assert.equal(
+      await gitPathExists(
+        fixture.originPath,
+        `${output.branch}:02-Work/Drafts/community-renamed.md`
+      ),
+      false
+    );
+  } finally {
+    restoreFetch();
+  }
 });

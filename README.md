@@ -17,6 +17,35 @@ Serveur MCP distant minimal pour un vault Obsidian, avec policy côté serveur e
 - un remote `origin` configuré sur ce clone
 - un token GitHub capable d’ouvrir une pull request sur le repo cible
 
+## Disclaimer I/O hors vault
+
+Le serveur vise à limiter les lectures et écritures de contenu au `VAULT_REPO_ROOT` configuré et à ses sous-répertoires. En revanche, certains accès techniques restent aujourd’hui en dehors du vault. Cette liste sert de trace explicite pour les utilisateurs et de backlog de durcissement pour les versions futures.
+
+Ce qui est déjà confiné :
+
+- les lectures de notes, sections, excerpts et recherches markdown restent limitées au vault ;
+- les écritures de contenu via `create_folder`, `move_note`, `rename_note` et `propose_change` sont ré-ancrées sur la racine du vault, y compris quand le vault est un sous-répertoire d’un repo Git ;
+- les chemins avec échappement (`..`, chemins absolus injectés, etc.) sont refusés côté serveur.
+
+Lectures qui peuvent rester hors vault :
+
+- lecture des fichiers de configuration du serveur, par exemple `.env`, `VAULT_TARGETS_FILE`, `VAULT_TARGET_MANIFEST_FILE` et `VAULT_POLICY_FILE` ;
+- lecture d’un fichier d’environnement référencé par un manifeste via `envFile` ;
+- lecture des métadonnées Git du dépôt via `git` et `.git`, notamment pour résoudre la racine du repo, vérifier les branches, créer des worktrees et préparer les commits ;
+- appels réseau vers GitHub API et vers le remote `origin` pendant les opérations de PR.
+
+Écritures qui peuvent rester hors vault :
+
+- création puis suppression d’un worktree Git temporaire dans le répertoire temporaire système, avec un chemin du type `/tmp/obsidian-vault-mcp-*` ;
+- écritures Git techniques dans les métadonnées du dépôt, par exemple `.git/worktrees`, refs locales, index, objets, commits et état de branche ;
+- push réseau vers le remote Git et création de pull request côté GitHub.
+
+Implication pratique :
+
+- le contenu markdown manipulé par le MCP doit rester dans le vault ;
+- en revanche, le workflow Git/PR s’appuie encore sur des écritures temporaires et des métadonnées hors vault ;
+- si l’objectif devient “zéro lecture/écriture hors vault”, il faudra remplacer ou isoler davantage ce workflow technique.
+
 ## Installation
 
 ```bash
@@ -101,7 +130,7 @@ Policy initiale de prod :
 
 - `write_via_pr` : `02-Work/TOR2e/working/**`, `02-Work/TOR2e/scratch/**`, `02-Work/TOR2e/specs/**`, `02-Work/Drafts/**`
 - `propose_only` : `README.md`, `02-Work/TOR2e/reference/**`, `03-Knowledge/**`, `04-Archive/**`, `90-Templates/**`
-- `deny` : `Private/**`, `Secrets/**`, `99-System/policy/**`, `99-System/prompts/**`, `99-System/schemas/**`
+- `deny` : `Private/**`, `Secrets/**`, `.config/**`, `99-System/policy/**`, `99-System/prompts/**`, `99-System/schemas/**`
 - tout le reste est refusé par `defaults`
 
 Ça te donne une première mise en prod prudente : ChatGPT peut travailler sur le périmètre TOR2e utile, sans pouvoir écrire partout dans le vault.
@@ -149,6 +178,71 @@ targets:
       repo: your-real-vault-repo
 ```
 
+### Mode recommandé : manifeste porté par le vault
+
+Si tu veux que le serveur MCP reste le plus agnostique possible, tu peux maintenant mettre la configuration métier dans le vault lui-même.
+
+Option mono-vault :
+
+```dotenv
+VAULT_TARGET_MANIFEST_FILE=/absolute/path/to/your-vault/.config/mcp/vault-target.yaml
+VAULT_TARGET=real-vault
+GITHUB_TOKEN=github_pat_xxx
+```
+
+Exemple de manifeste dans le vault :
+
+```yaml
+version: 1
+policyFile: .config/policy/vault-access-policy.yaml
+envFile: .config/mcp/.env.local
+github:
+  owner: your-user-or-org
+  repo: your-real-vault-repo
+  defaultBranch: main
+githubTokenEnv: GITHUB_TOKEN
+gitAuthorName: Obsidian MCP Bot
+gitAuthorEmail: bot@example.com
+maxChangeFiles: 5
+maxTotalLineDelta: 400
+```
+
+Le serveur :
+
+- découvre automatiquement le `repoRoot` en remontant jusqu’au repo Git qui contient le manifeste ;
+- résout `policyFile` relativement à la racine du vault ;
+- peut charger un fichier d’environnement spécifique au vault via `envFile` ;
+- lit les métadonnées GitHub et les limites d’écriture depuis le manifeste ;
+- garde les secrets hors du vault versionné en utilisant `githubTokenEnv`.
+
+Convention recommandée dans le vault :
+
+- `.config/mcp/vault-target.yaml` pour le manifeste bootstrap
+- `.config/mcp/.env.local` ou `.config/mcp/.env.e2e` pour les variables locales propres à ce vault
+- `.config/policy/vault-access-policy.yaml` pour la policy d’accès
+- `.config/secrets/` seulement si ce répertoire n’est pas versionné ; sinon préfère un secret store local et `githubTokenEnv`
+
+Option multi-vault :
+
+```yaml
+version: 1
+defaultTarget: real-vault
+targets:
+  real-vault:
+    manifestFile: /absolute/path/to/your-vault/.config/mcp/vault-target.yaml
+
+  sandbox:
+    manifestFile: /absolute/path/to/your-sandbox-vault/.config/mcp/vault-target.yaml
+```
+
+Le catalogue côté MCP devient alors un simple bootstrap de découverte, et la configuration spécifique vit dans chaque vault.
+
+Important :
+
+- il est raisonnable de stocker la policy et les métadonnées d’intégration dans le vault ;
+- il est déconseillé d’y stocker les secrets GitHub eux-mêmes si le vault est versionné ;
+- préfère une référence de type `githubTokenEnv` vers une variable d’environnement ou un secret store local.
+
 ### Comment cibler un repo précis
 
 Les 10 tools “vault natifs” acceptent maintenant un champ optionnel `target`.
@@ -190,6 +284,12 @@ Prépare d’abord un fichier `.env.e2e` à partir de [.env.e2e.example](/Users/
 ```bash
 npm run test:e2e:real
 ```
+
+Si `VAULT_TARGET_MANIFEST_FILE` pointe vers un manifeste dans le vault, le harness E2E cherchera par défaut son fichier `.env.e2e` à côté de ce manifeste, par exemple :
+
+- `/absolute/path/to/your-vault/.config/mcp/.env.e2e`
+
+Tu peux toujours forcer un autre chemin avec `E2E_ENV_FILE`.
 
 Le script vérifie maintenant le flux de lecture avant même le flux PR:
 

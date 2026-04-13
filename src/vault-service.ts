@@ -463,6 +463,45 @@ function encodeStableDocumentId(targetName: string, relativePath: string): strin
   return `obsidian-vault:v1:${encodedTarget}:${encodedPath}`;
 }
 
+async function resolveGitRepositoryRoot(startDirectory: string): Promise<string> {
+  const canonicalStartDirectory = await fs.realpath(startDirectory).catch(() => path.resolve(startDirectory));
+
+  try {
+    const { stdout } = await execFileAsync("git", ["rev-parse", "--show-toplevel"], {
+      cwd: canonicalStartDirectory
+    });
+
+    return await fs.realpath(stdout.trim()).catch(() => path.resolve(stdout.trim()));
+  } catch (error) {
+    if (error instanceof Error) {
+      throw new Error(
+        `Unable to resolve the git repository root for vault ${canonicalStartDirectory}: ${error.message}`
+      );
+    }
+
+    throw error;
+  }
+}
+
+async function relativeVaultRootWithinRepository(
+  repositoryRoot: string,
+  vaultRoot: string
+): Promise<string | null> {
+  const absoluteRepositoryRoot = await fs.realpath(repositoryRoot).catch(() => path.resolve(repositoryRoot));
+  const absoluteVaultRoot = await fs.realpath(vaultRoot).catch(() => path.resolve(vaultRoot));
+  const relativePath = path.relative(absoluteRepositoryRoot, absoluteVaultRoot);
+
+  if (!relativePath) {
+    return null;
+  }
+
+  if (path.isAbsolute(relativePath) || relativePath === ".." || relativePath.startsWith(`..${path.sep}`)) {
+    throw new Error(`Vault root escapes the git repository root: ${absoluteVaultRoot}`);
+  }
+
+  return normalizeVaultPath(relativePath.replace(/\\/g, "/"));
+}
+
 function decodeStableDocumentId(
   identifier: string,
   expectedTargetName: string
@@ -526,7 +565,9 @@ export class VaultService {
   private constructor(
     private readonly config: VaultTargetConfig,
     private readonly policy: VaultPolicyEngine,
-    private readonly github: GitHubClient
+    private readonly github: GitHubClient,
+    private readonly gitRepositoryRoot: string,
+    private readonly vaultRootWithinRepository: string | null
   ) {}
 
   static async create(config: VaultTargetConfig): Promise<VaultService> {
@@ -537,8 +578,19 @@ export class VaultService {
       repo: config.githubRepo,
       ...(config.githubToken ? { token: config.githubToken } : {})
     });
+    const gitRepositoryRoot = await resolveGitRepositoryRoot(config.vaultRepoRoot);
+    const vaultRootWithinRepository = await relativeVaultRootWithinRepository(
+      gitRepositoryRoot,
+      config.vaultRepoRoot
+    );
 
-    return new VaultService(config, policy, github);
+    return new VaultService(
+      config,
+      policy,
+      github,
+      gitRepositoryRoot,
+      vaultRootWithinRepository
+    );
   }
 
   readNote(relativePath: string): Promise<ReadNoteResult> {
@@ -805,10 +857,12 @@ export class VaultService {
     const worktreePath = await this.createWorktree(baseBranch);
 
     try {
-      await this.git(["checkout", "-b", branchName], { cwd: worktreePath });
+      const worktreeVaultRoot = this.resolveWorktreeVaultRoot(worktreePath);
 
-      const worktreeFolderPath = resolveVaultPath(worktreePath, safeFolderPath);
-      const worktreePlaceholderPath = resolveVaultPath(worktreePath, placeholderPath);
+      await this.git(["checkout", "-b", branchName], { cwd: worktreeVaultRoot });
+
+      const worktreeFolderPath = resolveVaultPath(worktreeVaultRoot, safeFolderPath);
+      const worktreePlaceholderPath = resolveVaultPath(worktreeVaultRoot, placeholderPath);
 
       if (await pathExists(worktreeFolderPath)) {
         throw new RefusalError(`Folder already exists on base branch ${baseBranch}: ${safeFolderPath}`);
@@ -816,16 +870,16 @@ export class VaultService {
 
       await fs.mkdir(worktreeFolderPath, { recursive: true });
       await fs.writeFile(worktreePlaceholderPath, "", "utf8");
-      await this.git(["add", placeholderPath], { cwd: worktreePath });
+      await this.git(["add", placeholderPath], { cwd: worktreeVaultRoot });
 
-      const stagedFiles = await this.git(["diff", "--cached", "--name-only"], { cwd: worktreePath });
+      const stagedFiles = await this.git(["diff", "--cached", "--name-only"], { cwd: worktreeVaultRoot });
       if (!stagedFiles.trim()) {
         throw new RefusalError("No file changes were staged. Refusing to create an empty commit.");
       }
 
-      await this.commit(worktreePath, commitMessage);
-      const commitSha = await this.git(["rev-parse", "HEAD"], { cwd: worktreePath });
-      await this.git(["push", "-u", "origin", branchName], { cwd: worktreePath });
+      await this.commit(worktreeVaultRoot, commitMessage);
+      const commitSha = await this.git(["rev-parse", "HEAD"], { cwd: worktreeVaultRoot });
+      await this.git(["push", "-u", "origin", branchName], { cwd: worktreeVaultRoot });
 
       const pullRequest = await this.github.createPullRequest({
         title,
@@ -974,25 +1028,27 @@ export class VaultService {
     const worktreePath = await this.createWorktree(baseBranch);
 
     try {
-      await this.git(["checkout", "-b", branchName], { cwd: worktreePath });
+      const worktreeVaultRoot = this.resolveWorktreeVaultRoot(worktreePath);
+
+      await this.git(["checkout", "-b", branchName], { cwd: worktreeVaultRoot });
 
       for (const preparedChange of preparedChanges) {
-        const absolutePath = resolveVaultPath(worktreePath, preparedChange.safePath);
+        const absolutePath = resolveVaultPath(worktreeVaultRoot, preparedChange.safePath);
         await fs.mkdir(path.dirname(absolutePath), { recursive: true });
         await fs.writeFile(absolutePath, preparedChange.next, "utf8");
       }
 
       const changedFiles = Array.from(seenPaths).sort();
-      await this.git(["add", ...changedFiles], { cwd: worktreePath });
+      await this.git(["add", ...changedFiles], { cwd: worktreeVaultRoot });
 
-      const stagedFiles = await this.git(["diff", "--cached", "--name-only"], { cwd: worktreePath });
+      const stagedFiles = await this.git(["diff", "--cached", "--name-only"], { cwd: worktreeVaultRoot });
       if (!stagedFiles.trim()) {
         throw new RefusalError("No file changes were staged. Refusing to create an empty commit.");
       }
 
-      await this.commit(worktreePath, commitMessage);
-      const commitSha = await this.git(["rev-parse", "HEAD"], { cwd: worktreePath });
-      await this.git(["push", "-u", "origin", branchName], { cwd: worktreePath });
+      await this.commit(worktreeVaultRoot, commitMessage);
+      const commitSha = await this.git(["rev-parse", "HEAD"], { cwd: worktreeVaultRoot });
+      await this.git(["push", "-u", "origin", branchName], { cwd: worktreeVaultRoot });
 
       const pullRequest = await this.github.createPullRequest({
         title: input.title,
@@ -1453,10 +1509,12 @@ export class VaultService {
     const worktreePath = await this.createWorktree(baseBranch);
 
     try {
-      await this.git(["checkout", "-b", branchName], { cwd: worktreePath });
+      const worktreeVaultRoot = this.resolveWorktreeVaultRoot(worktreePath);
 
-      const worktreeSourcePath = resolveVaultPath(worktreePath, input.safeSourcePath);
-      const worktreeDestinationPath = resolveVaultPath(worktreePath, input.safeDestinationPath);
+      await this.git(["checkout", "-b", branchName], { cwd: worktreeVaultRoot });
+
+      const worktreeSourcePath = resolveVaultPath(worktreeVaultRoot, input.safeSourcePath);
+      const worktreeDestinationPath = resolveVaultPath(worktreeVaultRoot, input.safeDestinationPath);
 
       if (!(await pathExists(worktreeSourcePath))) {
         throw new Error(`Source note does not exist on base branch ${baseBranch}: ${input.safeSourcePath}`);
@@ -1467,18 +1525,18 @@ export class VaultService {
       }
 
       await fs.mkdir(path.dirname(worktreeDestinationPath), { recursive: true });
-      await this.git(["mv", input.safeSourcePath, input.safeDestinationPath], { cwd: worktreePath });
+      await this.git(["mv", input.safeSourcePath, input.safeDestinationPath], { cwd: worktreeVaultRoot });
       await fs.writeFile(worktreeDestinationPath, current, "utf8");
-      await this.git(["add", input.safeDestinationPath], { cwd: worktreePath });
+      await this.git(["add", input.safeDestinationPath], { cwd: worktreeVaultRoot });
 
-      const stagedFiles = await this.git(["diff", "--cached", "--name-only"], { cwd: worktreePath });
+      const stagedFiles = await this.git(["diff", "--cached", "--name-only"], { cwd: worktreeVaultRoot });
       if (!stagedFiles.trim()) {
         throw new RefusalError("No file changes were staged. Refusing to create an empty commit.");
       }
 
-      await this.commit(worktreePath, commitMessage);
-      const commitSha = await this.git(["rev-parse", "HEAD"], { cwd: worktreePath });
-      await this.git(["push", "-u", "origin", branchName], { cwd: worktreePath });
+      await this.commit(worktreeVaultRoot, commitMessage);
+      const commitSha = await this.git(["rev-parse", "HEAD"], { cwd: worktreeVaultRoot });
+      await this.git(["push", "-u", "origin", branchName], { cwd: worktreeVaultRoot });
 
       const pullRequest = await this.github.createPullRequest({
         title,
@@ -1539,13 +1597,13 @@ export class VaultService {
   }
 
   private async createWorktree(baseBranch: string): Promise<string> {
-    await this.git(["fetch", "origin", baseBranch], { cwd: this.config.vaultRepoRoot });
+    await this.git(["fetch", "origin", baseBranch], { cwd: this.gitRepositoryRoot });
 
     const worktreePath = await fs.mkdtemp(path.join(os.tmpdir(), "obsidian-vault-mcp-"));
 
     try {
       await this.git(["worktree", "add", "--detach", worktreePath, `origin/${baseBranch}`], {
-        cwd: this.config.vaultRepoRoot
+        cwd: this.gitRepositoryRoot
       });
       return worktreePath;
     } catch (error) {
@@ -1557,7 +1615,7 @@ export class VaultService {
   private async removeWorktree(worktreePath: string): Promise<void> {
     try {
       await this.git(["worktree", "remove", "--force", worktreePath], {
-        cwd: this.config.vaultRepoRoot
+        cwd: this.gitRepositoryRoot
       });
     } finally {
       await fs.rm(worktreePath, { recursive: true, force: true });
@@ -1583,7 +1641,7 @@ export class VaultService {
   private async git(args: string[], options?: GitOptions): Promise<string> {
     try {
       const { stdout } = await execFileAsync("git", args, {
-        cwd: options?.cwd ?? this.config.vaultRepoRoot
+        cwd: options?.cwd ?? this.gitRepositoryRoot
       });
       return stdout.trim();
     } catch (error) {
@@ -1598,11 +1656,19 @@ export class VaultService {
   private async gitSucceeds(args: string[]): Promise<boolean> {
     try {
       await execFileAsync("git", args, {
-        cwd: this.config.vaultRepoRoot
+        cwd: this.gitRepositoryRoot
       });
       return true;
     } catch {
       return false;
     }
+  }
+
+  private resolveWorktreeVaultRoot(worktreePath: string): string {
+    if (!this.vaultRootWithinRepository) {
+      return path.resolve(worktreePath);
+    }
+
+    return resolveVaultPath(worktreePath, this.vaultRootWithinRepository);
   }
 }
