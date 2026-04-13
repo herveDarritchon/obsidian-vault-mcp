@@ -443,8 +443,8 @@ test("fetchOpenAI returns full note contents and metadata", async () => {
   assert.match(output.id, /^obsidian-vault:v1:test:[A-Za-z0-9_-]+$/);
   assert.equal(output.title, "Community");
   assert.equal(output.path, "02-Work/TOR2e/specs/community.md");
-  assert.match(output.content, /## Chronicle tab/);
   assert.match(output.text, /## Chronicle tab/);
+  assert.equal("content" in output, false);
   assert.equal(
     output.url,
     "https://github.com/example/vault/blob/main/02-Work/TOR2e/specs/community.md"

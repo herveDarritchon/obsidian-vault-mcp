@@ -721,7 +721,6 @@ export class VaultService {
       id: note.id,
       title: note.title,
       path: note.path,
-      content: note.content,
       text: note.content,
       url: note.url,
       metadata: {

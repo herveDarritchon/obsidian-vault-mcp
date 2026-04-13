@@ -80,7 +80,6 @@ export interface OpenAIFetchResult extends Record<string, unknown> {
   id: string;
   title: string;
   path: string;
-  content: string;
   text: string;
   url: string;
   metadata: Record<string, unknown>;
