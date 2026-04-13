@@ -902,7 +902,7 @@ export class VaultService {
     }
   }
 
-  async updateNoteDraft(change: NoteChange): Promise<UpdateDraftResult> {
+  async updateNoteDraft(change: NoteChange & { include_draft_content?: boolean }): Promise<UpdateDraftResult> {
     const safePath = normalizeVaultPath(change.path);
     const access = this.policy.accessForPath(safePath);
 
@@ -931,7 +931,7 @@ export class VaultService {
       path: safePath,
       current_sha256: currentSha,
       draft_sha256: sha256(draft),
-      draft_content: draft,
+      ...(change.include_draft_content ? { draft_content: draft } : {}),
       diff_summary: buildDiffSummary(current, draft, change),
       warnings,
       policy: access

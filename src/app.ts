@@ -87,7 +87,7 @@ const updateDraftOutputSchema = {
   path: z.string(),
   current_sha256: z.string(),
   draft_sha256: z.string(),
-  draft_content: z.string(),
+  draft_content: z.string().optional(),
   diff_summary: z.object({
     changed_sections: z.array(z.string()),
     line_delta: z.number().int()
@@ -824,14 +824,15 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
         mode: z.enum(["replace_full", "append", "replace_section"]),
         content: z.string(),
         section_heading: z.string().optional(),
-        expected_sha256: z.string().optional()
+        expected_sha256: z.string().optional(),
+        include_draft_content: z.boolean().default(false)
       },
       outputSchema: updateDraftOutputSchema,
       annotations: {
         readOnlyHint: true
       }
     },
-    async ({ target, path, mode, content, section_heading, expected_sha256 }) => {
+    async ({ target, path, mode, content, section_heading, expected_sha256, include_draft_content }) => {
       const requestId = randomUUID();
       logEvent("info", "tool_invoked", {
         requestId,
@@ -848,7 +849,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           mode,
           content,
           ...(section_heading ? { section_heading } : {}),
-          ...(expected_sha256 ? { expected_sha256 } : {})
+          ...(expected_sha256 ? { expected_sha256 } : {}),
+          include_draft_content
         });
         logEvent("info", "tool_completed", {
           requestId,

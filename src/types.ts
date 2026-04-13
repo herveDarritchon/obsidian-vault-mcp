@@ -108,7 +108,7 @@ export interface UpdateDraftResult extends Record<string, unknown> {
   path: string;
   current_sha256: string;
   draft_sha256: string;
-  draft_content: string;
+  draft_content?: string;
   diff_summary: DraftDiffSummary;
   warnings: string[];
   policy: PolicyAccess;
