@@ -2,6 +2,7 @@ import "dotenv/config";
 
 import fs from "node:fs";
 import path from "node:path";
+import dotenv from "dotenv";
 import yaml from "js-yaml";
 import { z } from "zod";
 
@@ -10,8 +11,10 @@ const baseConfigSchema = z.object({
   HOST: z.string().min(1).default("127.0.0.1"),
   MCP_PATH: z.string().min(1).default("/mcp"),
   MCP_AUTH_TOKEN: z.string().trim().optional().transform((value) => value || undefined),
+  TOOL_PROFILE: z.enum(["full", "minimal"]).default("full"),
   VAULT_TARGET: z.string().trim().optional().transform((value) => value || undefined),
   VAULT_TARGETS_FILE: z.string().trim().optional().transform((value) => value || undefined),
+  VAULT_TARGET_MANIFEST_FILE: z.string().trim().optional().transform((value) => value || undefined),
   VAULT_REPO_ROOT: z.string().trim().optional().transform((value) => value || undefined),
   VAULT_POLICY_FILE: z.string().trim().optional().transform((value) => value || undefined),
   GITHUB_OWNER: z.string().trim().optional().transform((value) => value || undefined),
@@ -25,7 +28,7 @@ const baseConfigSchema = z.object({
   MAX_TOTAL_LINE_DELTA: z.coerce.number().int().min(1).default(400)
 });
 
-const targetEntrySchema = z.object({
+const legacyTargetEntrySchema = z.object({
   repoRoot: z.string().min(1),
   policyFile: z.string().min(1),
   github: z.object({
@@ -41,6 +44,15 @@ const targetEntrySchema = z.object({
   maxTotalLineDelta: z.number().int().min(1).optional()
 });
 
+const manifestTargetEntrySchema = z.object({
+  manifestFile: z.string().min(1)
+});
+
+const targetEntrySchema = z.union([
+  legacyTargetEntrySchema,
+  manifestTargetEntrySchema
+]);
+
 const targetsFileSchema = z.object({
   version: z.literal(1),
   defaultTarget: z.string().min(1).optional(),
@@ -52,6 +64,27 @@ const targetsFileSchema = z.object({
 
 type ParsedBaseConfig = z.infer<typeof baseConfigSchema>;
 type ParsedTargetFile = z.infer<typeof targetsFileSchema>;
+type LegacyTargetEntry = z.infer<typeof legacyTargetEntrySchema>;
+type ManifestTargetEntry = z.infer<typeof manifestTargetEntrySchema>;
+
+const vaultTargetManifestSchema = z.object({
+  version: z.literal(1),
+  policyFile: z.string().min(1),
+  envFile: z.string().min(1).optional(),
+  github: z.object({
+    owner: z.string().min(1),
+    repo: z.string().min(1),
+    defaultBranch: z.string().min(1).optional()
+  }),
+  githubApiBaseUrl: z.string().url().optional(),
+  githubTokenEnv: z.string().min(1).optional(),
+  gitAuthorName: z.string().min(1).optional(),
+  gitAuthorEmail: z.string().min(1).optional(),
+  maxChangeFiles: z.number().int().min(1).max(20).optional(),
+  maxTotalLineDelta: z.number().int().min(1).optional()
+});
+
+type VaultTargetManifest = z.infer<typeof vaultTargetManifestSchema>;
 
 export interface VaultTargetConfig {
   name: string;
@@ -68,11 +101,14 @@ export interface VaultTargetConfig {
   maxTotalLineDelta: number;
 }
 
+export type ToolProfile = "full" | "minimal";
+
 export interface AppConfig {
   port: number;
   host: string;
   mcpPath: string;
   mcpAuthToken?: string;
+  toolProfile: ToolProfile;
   defaultTarget: string;
   targets: Record<string, VaultTargetConfig>;
 }
@@ -89,11 +125,187 @@ function resolveAbsolutePath(baseDirectory: string, filePath: string): string {
   return path.isAbsolute(filePath) ? filePath : path.resolve(baseDirectory, filePath);
 }
 
+function findGitRoot(startDirectory: string): string {
+  let currentDirectory = path.resolve(startDirectory);
+
+  while (true) {
+    if (fs.existsSync(path.join(currentDirectory, ".git"))) {
+      return currentDirectory;
+    }
+
+    const parentDirectory = path.dirname(currentDirectory);
+    if (parentDirectory === currentDirectory) {
+      throw new Error(`Could not find a git repository root above ${startDirectory}`);
+    }
+
+    currentDirectory = parentDirectory;
+  }
+}
+
+function loadEnvFile(filePath: string): Record<string, string> {
+  if (!fs.existsSync(filePath)) {
+    return {};
+  }
+
+  const raw = fs.readFileSync(filePath, "utf8");
+  const parsed = dotenv.parse(raw);
+  return Object.fromEntries(
+    Object.entries(parsed).map(([key, value]) => [key, String(value)])
+  );
+}
+
+function loadVaultEnvOverrides(
+  repoRoot: string,
+  manifestDirectory: string,
+  explicitEnvFile?: string
+): Record<string, string> {
+  if (explicitEnvFile) {
+    return loadEnvFile(resolveAbsolutePath(repoRoot, explicitEnvFile));
+  }
+
+  const envPath = path.join(manifestDirectory, ".env");
+  const envLocalPath = path.join(manifestDirectory, ".env.local");
+  return {
+    ...loadEnvFile(envPath),
+    ...loadEnvFile(envLocalPath)
+  };
+}
+
+function resolveTargetValue(
+  key: keyof ParsedBaseConfig | string,
+  parsed: ParsedBaseConfig,
+  envOverrides: Record<string, string>
+): string | undefined {
+  const override = envOverrides[String(key)]?.trim();
+  if (override) {
+    return override;
+  }
+
+  const value = process.env[String(key)]?.trim();
+  if (value) {
+    return value;
+  }
+
+  const parsedValue = parsed[key as keyof ParsedBaseConfig];
+  return typeof parsedValue === "string" ? parsedValue : undefined;
+}
+
+function resolveTargetNumberValue(
+  key: "MAX_CHANGE_FILES" | "MAX_TOTAL_LINE_DELTA",
+  parsed: ParsedBaseConfig,
+  envOverrides: Record<string, string>
+): number {
+  const override = envOverrides[key]?.trim();
+  if (override) {
+    const value = Number(override);
+    if (Number.isFinite(value)) {
+      return value;
+    }
+  }
+
+  return parsed[key];
+}
+
+function buildTargetConfigFromManifest(
+  targetName: string,
+  manifestFilePath: string,
+  parsed: ParsedBaseConfig
+): VaultTargetConfig {
+  const absoluteManifestPath = path.resolve(manifestFilePath);
+  const manifestDirectory = path.dirname(absoluteManifestPath);
+  const repoRoot = findGitRoot(manifestDirectory);
+  const rawManifest = fs.readFileSync(absoluteManifestPath, "utf8");
+  const loadedManifest = yaml.load(rawManifest);
+  const parsedManifest = vaultTargetManifestSchema.safeParse(loadedManifest);
+
+  if (!parsedManifest.success) {
+    throw new Error(
+      `Invalid vault target manifest at ${absoluteManifestPath}: ${parsedManifest.error.message}`
+    );
+  }
+
+  const envOverrides = loadVaultEnvOverrides(repoRoot, manifestDirectory, parsedManifest.data.envFile);
+  return buildTargetConfigFromDocument(targetName, repoRoot, parsedManifest.data, parsed, envOverrides);
+}
+
+function buildTargetConfigFromDocument(
+  targetName: string,
+  repoRoot: string,
+  document: VaultTargetManifest,
+  parsed: ParsedBaseConfig,
+  envOverrides: Record<string, string> = {}
+): VaultTargetConfig {
+  const tokenEnvName = document.githubTokenEnv ?? "GITHUB_TOKEN";
+  const token =
+    envOverrides[tokenEnvName]?.trim() ||
+    process.env[tokenEnvName]?.trim() ||
+    resolveTargetValue("GITHUB_TOKEN", parsed, envOverrides);
+  const gitAuthorName = document.gitAuthorName ?? resolveTargetValue("GIT_AUTHOR_NAME", parsed, envOverrides);
+  const gitAuthorEmail =
+    document.gitAuthorEmail ?? resolveTargetValue("GIT_AUTHOR_EMAIL", parsed, envOverrides);
+  const githubDefaultBranch =
+    document.github.defaultBranch ?? resolveTargetValue("GITHUB_DEFAULT_BRANCH", parsed, envOverrides) ?? "main";
+  const githubApiBaseUrl =
+    resolveTargetValue("GITHUB_API_BASE_URL", parsed, envOverrides) ?? "https://api.github.com";
+
+  return {
+    name: targetName,
+    vaultRepoRoot: path.resolve(repoRoot),
+    vaultPolicyFile: resolveAbsolutePath(path.resolve(repoRoot), document.policyFile),
+    githubOwner: document.github.owner,
+    githubRepo: document.github.repo,
+    ...(token ? { githubToken: token } : {}),
+    githubDefaultBranch,
+    githubApiBaseUrl: (document.githubApiBaseUrl ?? githubApiBaseUrl).replace(/\/$/, ""),
+    ...(gitAuthorName ? { gitAuthorName } : {}),
+    ...(gitAuthorEmail ? { gitAuthorEmail } : {}),
+    maxChangeFiles: document.maxChangeFiles ?? resolveTargetNumberValue("MAX_CHANGE_FILES", parsed, envOverrides),
+    maxTotalLineDelta:
+      document.maxTotalLineDelta ?? resolveTargetNumberValue("MAX_TOTAL_LINE_DELTA", parsed, envOverrides)
+  };
+}
+
+function buildTargetConfigFromEntry(
+  targetName: string,
+  entry: LegacyTargetEntry | ManifestTargetEntry,
+  fileDirectory: string,
+  parsed: ParsedBaseConfig
+): VaultTargetConfig {
+  if ("manifestFile" in entry) {
+    return buildTargetConfigFromManifest(
+      targetName,
+      resolveAbsolutePath(fileDirectory, entry.manifestFile),
+      parsed
+    );
+  }
+
+  const tokenEnvName = entry.githubTokenEnv ?? "GITHUB_TOKEN";
+  const token = process.env[tokenEnvName]?.trim() || parsed.GITHUB_TOKEN;
+  const gitAuthorName = entry.gitAuthorName ?? parsed.GIT_AUTHOR_NAME;
+  const gitAuthorEmail = entry.gitAuthorEmail ?? parsed.GIT_AUTHOR_EMAIL;
+
+  return {
+    name: targetName,
+    vaultRepoRoot: resolveAbsolutePath(fileDirectory, entry.repoRoot),
+    vaultPolicyFile: resolveAbsolutePath(fileDirectory, entry.policyFile),
+    githubOwner: entry.github.owner,
+    githubRepo: entry.github.repo,
+    ...(token ? { githubToken: token } : {}),
+    githubDefaultBranch: entry.github.defaultBranch ?? parsed.GITHUB_DEFAULT_BRANCH,
+    githubApiBaseUrl: (entry.githubApiBaseUrl ?? parsed.GITHUB_API_BASE_URL).replace(/\/$/, ""),
+    ...(gitAuthorName ? { gitAuthorName } : {}),
+    ...(gitAuthorEmail ? { gitAuthorEmail } : {}),
+    maxChangeFiles: entry.maxChangeFiles ?? parsed.MAX_CHANGE_FILES,
+    maxTotalLineDelta: entry.maxTotalLineDelta ?? parsed.MAX_TOTAL_LINE_DELTA
+  };
+}
+
 function normalizeBaseConfig(parsed: ParsedBaseConfig): Omit<AppConfig, "defaultTarget" | "targets"> {
   return {
     port: parsed.PORT,
     host: parsed.HOST,
     mcpPath: parsed.MCP_PATH,
+    toolProfile: parsed.TOOL_PROFILE,
     ...(parsed.MCP_AUTH_TOKEN ? { mcpAuthToken: parsed.MCP_AUTH_TOKEN } : {})
   };
 }
@@ -162,28 +374,9 @@ function loadTargetsFile(parsed: ParsedBaseConfig): AppConfig {
 
   const targets = Object.fromEntries(
     Object.entries(document.targets).map(([targetName, entry]) => {
-      const tokenEnvName = entry.githubTokenEnv ?? "GITHUB_TOKEN";
-      const token = process.env[tokenEnvName]?.trim() || parsed.GITHUB_TOKEN;
-      const gitAuthorName = entry.gitAuthorName ?? parsed.GIT_AUTHOR_NAME;
-      const gitAuthorEmail = entry.gitAuthorEmail ?? parsed.GIT_AUTHOR_EMAIL;
-      const targetConfig: VaultTargetConfig = {
-        name: targetName,
-        vaultRepoRoot: resolveAbsolutePath(fileDirectory, entry.repoRoot),
-        vaultPolicyFile: resolveAbsolutePath(fileDirectory, entry.policyFile),
-        githubOwner: entry.github.owner,
-        githubRepo: entry.github.repo,
-        ...(token ? { githubToken: token } : {}),
-        githubDefaultBranch: entry.github.defaultBranch ?? parsed.GITHUB_DEFAULT_BRANCH,
-        githubApiBaseUrl: (entry.githubApiBaseUrl ?? parsed.GITHUB_API_BASE_URL).replace(/\/$/, ""),
-        ...(gitAuthorName ? { gitAuthorName } : {}),
-        ...(gitAuthorEmail ? { gitAuthorEmail } : {}),
-        maxChangeFiles: entry.maxChangeFiles ?? parsed.MAX_CHANGE_FILES,
-        maxTotalLineDelta: entry.maxTotalLineDelta ?? parsed.MAX_TOTAL_LINE_DELTA
-      };
-
       return [
         targetName,
-        targetConfig
+        buildTargetConfigFromEntry(targetName, entry, fileDirectory, parsed)
       ];
     })
   ) as Record<string, VaultTargetConfig>;
@@ -195,11 +388,30 @@ function loadTargetsFile(parsed: ParsedBaseConfig): AppConfig {
   };
 }
 
+function loadSingleTargetManifest(parsed: ParsedBaseConfig): AppConfig {
+  const targetName = parsed.VAULT_TARGET ?? "default";
+  const manifestFilePath = path.resolve(
+    requiredValue(parsed.VAULT_TARGET_MANIFEST_FILE, "VAULT_TARGET_MANIFEST_FILE")
+  );
+
+  return {
+    ...normalizeBaseConfig(parsed),
+    defaultTarget: targetName,
+    targets: {
+      [targetName]: buildTargetConfigFromManifest(targetName, manifestFilePath, parsed)
+    }
+  };
+}
+
 export function loadConfig(): AppConfig {
   const parsed = baseConfigSchema.parse(process.env);
 
   if (parsed.VAULT_TARGETS_FILE) {
     return loadTargetsFile(parsed);
+  }
+
+  if (parsed.VAULT_TARGET_MANIFEST_FILE) {
+    return loadSingleTargetManifest(parsed);
   }
 
   return buildLegacyTargetConfig(parsed);
