@@ -57,7 +57,8 @@ interface DocumentDescriptor {
   url: string;
 }
 
-type BasicSearchResult = Pick<SearchResult, "path" | "snippet" | "score">;
+type LexicalCandidate = Pick<SearchResult, "path" | "snippet" | "score">;
+type BasicSearchResult = LexicalCandidate & { descriptor: DocumentDescriptor };
 
 const CANDIDATE_POOL_SIZE = 200;
 
@@ -703,7 +704,7 @@ export class VaultService {
 
     results.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
     return {
-      results: await Promise.all(results.slice(0, limit).map((result) => this.enrichSearchResult(result)))
+      results: results.slice(0, limit).map((result) => this.enrichSearchResult(result))
     };
   }
 
@@ -1158,7 +1159,7 @@ export class VaultService {
     descriptor: DocumentDescriptor,
     metadata: NoteRetrievalMetadata,
     lexicalBoost: number
-  ): BasicSearchResult | null {
+  ): LexicalCandidate | null {
     const matches: SearchFieldMatch[] = [];
     const pushMatch = (match: SearchFieldMatch | null) => {
       if (match && match.score > 0) {
@@ -1222,11 +1223,9 @@ export class VaultService {
     };
   }
 
-  private async enrichSearchResult(result: BasicSearchResult): Promise<SearchResult> {
-    const descriptor = await this.describeDocument(result.path);
-
+  private enrichSearchResult(result: BasicSearchResult): SearchResult {
     return {
-      ...descriptor,
+      ...result.descriptor,
       snippet: result.snippet,
       score: result.score
     };
@@ -1329,7 +1328,7 @@ export class VaultService {
       return;
     }
 
-    results.push(result);
+    results.push({ ...result, descriptor });
   }
 
   private async resolveSearchRoots(roots: string[] | undefined) {
@@ -1373,7 +1372,7 @@ export class VaultService {
   private async searchWithRipgrep(
     absoluteRoots: string[],
     query: string
-  ): Promise<BasicSearchResult[] | null> {
+  ): Promise<LexicalCandidate[] | null> {
     const args = [
       "--json",
       "--fixed-strings",
@@ -1411,8 +1410,8 @@ export class VaultService {
     }
   }
 
-  private parseRipgrepResults(stdout: string, query: string): BasicSearchResult[] {
-    const aggregated = new Map<string, BasicSearchResult>();
+  private parseRipgrepResults(stdout: string, query: string): LexicalCandidate[] {
+    const aggregated = new Map<string, LexicalCandidate>();
 
     for (const line of stdout.split("\n")) {
       if (!line.trim()) {
