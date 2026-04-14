@@ -57,6 +57,14 @@ interface DocumentDescriptor {
   url: string;
 }
 
+interface CachedNoteContent {
+  mtime: number;
+  content: string;
+  hash: string;
+  descriptor: DocumentDescriptor;
+  metadata: NoteRetrievalMetadata;
+}
+
 type BasicSearchResult = Pick<SearchResult, "path" | "snippet" | "score">;
 
 interface SearchQueryContext {
@@ -562,6 +570,11 @@ function decodeGitHubBlobPath(
 }
 
 export class VaultService {
+  private static readonly NOTE_CACHE_MAX_SIZE = 500;
+  private readonly noteCache = new Map<string, CachedNoteContent>();
+  private cacheHits = 0;
+  private cacheMisses = 0;
+
   private constructor(
     private readonly config: VaultTargetConfig,
     private readonly policy: VaultPolicyEngine,
@@ -569,6 +582,10 @@ export class VaultService {
     private readonly gitRepositoryRoot: string,
     private readonly vaultRootWithinRepository: string | null
   ) {}
+
+  getCacheStats(): { hits: number; misses: number; size: number } {
+    return { hits: this.cacheHits, misses: this.cacheMisses, size: this.noteCache.size };
+  }
 
   static async create(config: VaultTargetConfig): Promise<VaultService> {
     const policy = await VaultPolicyEngine.load(config.vaultPolicyFile);
@@ -1069,6 +1086,33 @@ export class VaultService {
     }
   }
 
+  private async readFileCached(absolutePath: string, relativePath: string): Promise<CachedNoteContent> {
+    const stat = await fs.stat(absolutePath);
+    const mtime = stat.mtimeMs;
+    const cached = this.noteCache.get(absolutePath);
+
+    if (cached && cached.mtime === mtime) {
+      this.cacheHits++;
+      return cached;
+    }
+
+    this.cacheMisses++;
+    const content = await fs.readFile(absolutePath, "utf8");
+    const descriptor = this.buildDocumentDescriptor(relativePath, content);
+    const metadata = extractNoteRetrievalMetadata(content);
+    const entry: CachedNoteContent = { mtime, content, hash: sha256(content), descriptor, metadata };
+
+    if (this.noteCache.size >= VaultService.NOTE_CACHE_MAX_SIZE) {
+      const firstKey = this.noteCache.keys().next().value;
+      if (firstKey !== undefined) {
+        this.noteCache.delete(firstKey);
+      }
+    }
+
+    this.noteCache.set(absolutePath, entry);
+    return entry;
+  }
+
   private async readNoteFromRoot(root: string, relativePath: string): Promise<ReadNoteResult> {
     const safePath = normalizeVaultPath(relativePath);
     const access = this.policy.accessForPath(safePath);
@@ -1078,14 +1122,13 @@ export class VaultService {
     }
 
     const absolutePath = resolveVaultPath(root, safePath);
-    const content = await fs.readFile(absolutePath, "utf8");
-    const descriptor = this.buildDocumentDescriptor(safePath, content);
+    const cached = await this.readFileCached(absolutePath, safePath);
 
     return {
-      ...descriptor,
+      ...cached.descriptor,
       path: safePath,
-      sha256: sha256(content),
-      content,
+      sha256: cached.hash,
+      content: cached.content,
       policy: access
     };
   }
@@ -1115,8 +1158,8 @@ export class VaultService {
 
   private async describeDocument(relativePath: string): Promise<DocumentDescriptor> {
     const absolutePath = resolveVaultPath(this.config.vaultRepoRoot, relativePath);
-    const content = await fs.readFile(absolutePath, "utf8");
-    return this.buildDocumentDescriptor(relativePath, content);
+    const cached = await this.readFileCached(absolutePath, relativePath);
+    return cached.descriptor;
   }
 
   private resolveOpenAIIdentifier(identifier: string): string {
@@ -1300,10 +1343,8 @@ export class VaultService {
     }
 
     const absolutePath = resolveVaultPath(this.config.vaultRepoRoot, relativePath);
-    const content = await fs.readFile(absolutePath, "utf8");
-    const metadata = extractNoteRetrievalMetadata(content);
-    const descriptor = this.buildDocumentDescriptor(relativePath, content);
-    const result = this.rankSearchResult(query, descriptor, metadata, lexicalBoost);
+    const cached = await this.readFileCached(absolutePath, relativePath);
+    const result = this.rankSearchResult(query, cached.descriptor, cached.metadata, lexicalBoost);
 
     if (!result) {
       return;
