@@ -561,7 +561,14 @@ function decodeGitHubBlobPath(
   }
 }
 
+interface SearchCounters {
+  filesScanned: number;
+  filesRead: number;
+}
+
 export class VaultService {
+  private lastSearchStats: SearchCounters = { filesScanned: 0, filesRead: 0 };
+
   private constructor(
     private readonly config: VaultTargetConfig,
     private readonly policy: VaultPolicyEngine,
@@ -569,6 +576,10 @@ export class VaultService {
     private readonly gitRepositoryRoot: string,
     private readonly vaultRootWithinRepository: string | null
   ) {}
+
+  getLastSearchStats(): SearchCounters {
+    return { ...this.lastSearchStats };
+  }
 
   static async create(config: VaultTargetConfig): Promise<VaultService> {
     const policy = await VaultPolicyEngine.load(config.vaultPolicyFile);
@@ -678,15 +689,18 @@ export class VaultService {
       tokens: tokenizeSearchText(trimmedQuery)
     };
 
+    const counters: SearchCounters = { filesScanned: 0, filesRead: 0 };
+
     for (const root of requestedRoots) {
       if (root.stats.isFile()) {
         const relativePath = toVaultRelativePath(this.config.vaultRepoRoot, root.absolutePath);
-        await this.searchFile(relativePath, queryContext, results, lexicalScores.get(relativePath) ?? 0);
+        await this.searchFile(relativePath, queryContext, results, lexicalScores.get(relativePath) ?? 0, counters);
       } else {
-        await this.searchDirectory(root.absolutePath, queryContext, lexicalScores, results);
+        await this.searchDirectory(root.absolutePath, queryContext, lexicalScores, results, counters);
       }
     }
 
+    this.lastSearchStats = counters;
     results.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
     return {
       results: await Promise.all(results.slice(0, limit).map((result) => this.enrichSearchResult(result)))
@@ -1224,7 +1238,8 @@ export class VaultService {
     absoluteRoot: string,
     query: SearchQueryContext,
     lexicalScores: Map<string, number>,
-    results: BasicSearchResult[]
+    results: BasicSearchResult[],
+    counters?: SearchCounters
   ): Promise<void> {
     const entries = await fs.readdir(absoluteRoot, { withFileTypes: true });
 
@@ -1236,7 +1251,7 @@ export class VaultService {
       const absolutePath = path.join(absoluteRoot, entry.name);
 
       if (entry.isDirectory()) {
-        await this.searchDirectory(absolutePath, query, lexicalScores, results);
+        await this.searchDirectory(absolutePath, query, lexicalScores, results, counters);
         continue;
       }
 
@@ -1245,7 +1260,7 @@ export class VaultService {
       }
 
       const relativePath = toVaultRelativePath(this.config.vaultRepoRoot, absolutePath);
-      await this.searchFile(relativePath, query, results, lexicalScores.get(relativePath) ?? 0);
+      await this.searchFile(relativePath, query, results, lexicalScores.get(relativePath) ?? 0, counters);
     }
   }
 
@@ -1291,12 +1306,21 @@ export class VaultService {
     relativePath: string,
     query: SearchQueryContext,
     results: BasicSearchResult[],
-    lexicalBoost: number
+    lexicalBoost: number,
+    counters?: SearchCounters
   ): Promise<void> {
+    if (counters) {
+      counters.filesScanned++;
+    }
+
     const access = this.policy.accessForPath(relativePath);
 
     if (!access.read) {
       return;
+    }
+
+    if (counters) {
+      counters.filesRead++;
     }
 
     const absolutePath = resolveVaultPath(this.config.vaultRepoRoot, relativePath);

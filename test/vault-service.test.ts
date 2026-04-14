@@ -867,3 +867,18 @@ test("rename_note keeps relocations inside a nested vault root", async () => {
     restoreFetch();
   }
 });
+
+test("searchNotes: getLastSearchStats reflects files_scanned and files_read after a search", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  await service.searchNotes("community", undefined, 10);
+
+  const stats = service.getLastSearchStats();
+  // The fixture has 5 markdown files: community.md, launch-post.md, memory.md,
+  // fellowship-memory.md (readable), and Secrets/token.md (denied by policy).
+  assert.ok(stats.filesScanned >= 4, `Expected at least 4 files scanned, got ${stats.filesScanned}`);
+  // files_read <= files_scanned (denied paths are not read)
+  assert.ok(stats.filesRead <= stats.filesScanned, "filesRead should not exceed filesScanned");
+  assert.ok(stats.filesRead >= 1, "Expected at least one readable file read");
+});

@@ -162,6 +162,19 @@ function withJsonTextOnly<T extends Record<string, unknown>>(output: T) {
   };
 }
 
+/**
+ * Computes response-size and token-cost telemetry for a tool call.
+ * Token estimate uses the ~4 bytes/token heuristic common for Claude and GPT models.
+ */
+function computeTelemetry(output: unknown, startTime: number) {
+  const responseBytes = Buffer.byteLength(jsonText(output), "utf8");
+  return {
+    duration_ms: Date.now() - startTime,
+    response_bytes: responseBytes,
+    estimated_tokens: Math.ceil(responseBytes / 4)
+  };
+}
+
 function createTargetResolver(services: Map<string, VaultService>, defaultTarget: string) {
   return (requestedTarget?: string) => {
     const targetName = requestedTarget?.trim() || defaultTarget;
@@ -204,6 +217,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     },
     async ({ target, id, path }) => {
       const requestId = randomUUID();
+      const startTime = Date.now();
       const reference = id ?? path ?? "<missing>";
       logEvent("info", "tool_invoked", {
         requestId,
@@ -216,17 +230,16 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
         const { targetName, service } = resolveTarget(target);
         const safePath = service.resolveReadReference({ id, path });
         const output = await service.readNote(safePath);
+        const outputWithTarget = { target: targetName, ...output };
         logEvent("info", "tool_completed", {
           requestId,
           tool: "read_note",
           result: "success",
           target: targetName,
-          paths: [output.path]
+          paths: [output.path],
+          ...computeTelemetry(outputWithTarget, startTime)
         });
-        return withStructuredContent({
-          target: targetName,
-          ...output
-        });
+        return withStructuredContent(outputWithTarget);
       } catch (error) {
         const message = error instanceof Error ? error.message : "read_note failed";
         logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
@@ -235,7 +248,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           result: isRefusalError(error) ? "refusal" : "error",
           target: target ?? config.defaultTarget,
           paths: [reference],
-          error: message
+          error: message,
+          duration_ms: Date.now() - startTime
         });
         return toolError(message);
       }
@@ -260,6 +274,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     },
     async ({ target, id, path, section_heading }) => {
       const requestId = randomUUID();
+      const startTime = Date.now();
       const reference = id ?? path ?? "<missing>";
       logEvent("info", "tool_invoked", {
         requestId,
@@ -273,18 +288,17 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
         const { targetName, service } = resolveTarget(target);
         const safePath = service.resolveReadReference({ id, path });
         const output = await service.readSection(safePath, section_heading);
+        const outputWithTarget = { target: targetName, ...output };
         logEvent("info", "tool_completed", {
           requestId,
           tool: "read_section",
           result: "success",
           target: targetName,
           paths: [output.path],
-          sectionHeading: output.section_heading
+          sectionHeading: output.section_heading,
+          ...computeTelemetry(outputWithTarget, startTime)
         });
-        return withStructuredContent({
-          target: targetName,
-          ...output
-        });
+        return withStructuredContent(outputWithTarget);
       } catch (error) {
         const message = error instanceof Error ? error.message : "read_section failed";
         logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
@@ -294,7 +308,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           target: target ?? config.defaultTarget,
           paths: [reference],
           sectionHeading: section_heading,
-          error: message
+          error: message,
+          duration_ms: Date.now() - startTime
         });
         return toolError(message);
       }
@@ -321,6 +336,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     },
     async ({ target, id, path, max_excerpt_chars, max_summary_chars, max_headings }) => {
       const requestId = randomUUID();
+      const startTime = Date.now();
       const reference = id ?? path ?? "<missing>";
       logEvent("info", "tool_invoked", {
         requestId,
@@ -340,18 +356,17 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           maxSummaryChars: max_summary_chars,
           maxHeadings: max_headings
         });
+        const outputWithTarget = { target: targetName, ...output };
         logEvent("info", "tool_completed", {
           requestId,
           tool: "read_note_excerpt",
           result: "success",
           target: targetName,
           paths: [output.path],
-          headings: output.headings.length
+          headings: output.headings.length,
+          ...computeTelemetry(outputWithTarget, startTime)
         });
-        return withStructuredContent({
-          target: targetName,
-          ...output
-        });
+        return withStructuredContent(outputWithTarget);
       } catch (error) {
         const message = error instanceof Error ? error.message : "read_note_excerpt failed";
         logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
@@ -360,7 +375,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           result: isRefusalError(error) ? "refusal" : "error",
           target: target ?? config.defaultTarget,
           paths: [reference],
-          error: message
+          error: message,
+          duration_ms: Date.now() - startTime
         });
         return toolError(message);
       }
@@ -382,6 +398,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     },
     async ({ query }) => {
       const requestId = randomUUID();
+      const startTime = Date.now();
       logEvent("info", "tool_invoked", {
         requestId,
         tool: "search",
@@ -393,13 +410,17 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
       try {
         const { targetName, service } = resolveTarget();
         const output = await service.searchOpenAI(query, 10);
+        const searchStats = service.getLastSearchStats();
         logEvent("info", "tool_completed", {
           requestId,
           tool: "search",
           result: "success",
           target: targetName,
           paths: output.results.map((result) => result.path),
-          resultCount: output.results.length
+          resultCount: output.results.length,
+          files_scanned: searchStats.filesScanned,
+          files_read: searchStats.filesRead,
+          ...computeTelemetry(output, startTime)
         });
         return withJsonTextOnly(output);
       } catch (error) {
@@ -410,7 +431,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           result: isRefusalError(error) ? "refusal" : "error",
           target: config.defaultTarget,
           paths: ["."],
-          error: message
+          error: message,
+          duration_ms: Date.now() - startTime
         });
         return toolError(message);
       }
@@ -432,6 +454,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     },
     async ({ id }) => {
       const requestId = randomUUID();
+      const startTime = Date.now();
       logEvent("info", "tool_invoked", {
         requestId,
         tool: "fetch",
@@ -447,7 +470,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           tool: "fetch",
           result: "success",
           target: targetName,
-          paths: [output.path]
+          paths: [output.path],
+          ...computeTelemetry(output, startTime)
         });
         return withJsonTextOnly(output);
       } catch (error) {
@@ -458,7 +482,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           result: isRefusalError(error) ? "refusal" : "error",
           target: config.defaultTarget,
           paths: [id],
-          error: message
+          error: message,
+          duration_ms: Date.now() - startTime
         });
         return toolError(message);
       }
@@ -482,6 +507,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     },
     async ({ target, root, limit }) => {
       const requestId = randomUUID();
+      const startTime = Date.now();
       logEvent("info", "tool_invoked", {
         requestId,
         tool: "list_notes",
@@ -493,18 +519,17 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
       try {
         const { targetName, service } = resolveTarget(target);
         const output = await service.listNotes(root, limit);
+        const outputWithTarget = { target: targetName, ...output };
         logEvent("info", "tool_completed", {
           requestId,
           tool: "list_notes",
           result: "success",
           target: targetName,
           paths: [output.root],
-          resultCount: output.results.length
+          resultCount: output.results.length,
+          ...computeTelemetry(outputWithTarget, startTime)
         });
-        return withStructuredContent({
-          target: targetName,
-          ...output
-        });
+        return withStructuredContent(outputWithTarget);
       } catch (error) {
         const message = error instanceof Error ? error.message : "list_notes failed";
         logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
@@ -513,7 +538,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           result: isRefusalError(error) ? "refusal" : "error",
           target: target ?? config.defaultTarget,
           paths: [root ?? "."],
-          error: message
+          error: message,
+          duration_ms: Date.now() - startTime
         });
         return toolError(message);
       }
@@ -538,6 +564,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     },
     async ({ target, query, roots, limit }) => {
       const requestId = randomUUID();
+      const startTime = Date.now();
       logEvent("info", "tool_invoked", {
         requestId,
         tool: "search_notes",
@@ -549,18 +576,20 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
       try {
         const { targetName, service } = resolveTarget(target);
         const output = await service.searchNotes(query, roots, limit);
+        const searchStats = service.getLastSearchStats();
+        const outputWithTarget = { target: targetName, ...output };
         logEvent("info", "tool_completed", {
           requestId,
           tool: "search_notes",
           result: "success",
           target: targetName,
           paths: roots ?? ["."],
-          resultCount: output.results.length
+          resultCount: output.results.length,
+          files_scanned: searchStats.filesScanned,
+          files_read: searchStats.filesRead,
+          ...computeTelemetry(outputWithTarget, startTime)
         });
-        return withStructuredContent({
-          target: targetName,
-          ...output
-        });
+        return withStructuredContent(outputWithTarget);
       } catch (error) {
         const message = error instanceof Error ? error.message : "search_notes failed";
         logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
@@ -569,7 +598,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           result: isRefusalError(error) ? "refusal" : "error",
           target: target ?? config.defaultTarget,
           paths: roots ?? ["."],
-          error: message
+          error: message,
+          duration_ms: Date.now() - startTime
         });
         return toolError(message);
       }
@@ -595,6 +625,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     },
     async ({ target, path, title, base_branch, branch_name, commit_message, pr_body }) => {
       const requestId = randomUUID();
+      const startTime = Date.now();
       logEvent("info", "tool_invoked", {
         requestId,
         tool: "create_folder",
@@ -614,6 +645,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           ...(commit_message ? { commit_message } : {}),
           ...(pr_body ? { pr_body } : {})
         });
+        const outputWithTarget = { target: targetName, ...output };
         logEvent("info", "tool_completed", {
           requestId,
           tool: "create_folder",
@@ -621,12 +653,10 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           target: targetName,
           paths: [output.path, output.placeholder_path],
           branch: output.branch,
-          pullRequest: output.pull_request.url
+          pullRequest: output.pull_request.url,
+          ...computeTelemetry(outputWithTarget, startTime)
         });
-        return withStructuredContent({
-          target: targetName,
-          ...output
-        });
+        return withStructuredContent(outputWithTarget);
       } catch (error) {
         const message = error instanceof Error ? error.message : "create_folder failed";
         logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
@@ -636,7 +666,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           target: target ?? config.defaultTarget,
           paths: [path],
           branch: branch_name,
-          error: message
+          error: message,
+          duration_ms: Date.now() - startTime
         });
         return toolError(message);
       }
@@ -676,6 +707,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
       pr_body
     }) => {
       const requestId = randomUUID();
+      const startTime = Date.now();
       const reference = id ?? path ?? "<missing>";
       logEvent("info", "tool_invoked", {
         requestId,
@@ -699,6 +731,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           ...(commit_message ? { commit_message } : {}),
           ...(pr_body ? { pr_body } : {})
         });
+        const outputWithTarget = { target: targetName, ...output };
         logEvent("info", "tool_completed", {
           requestId,
           tool: "rename_note",
@@ -706,12 +739,10 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           target: targetName,
           paths: [output.previous_path, output.path],
           branch: output.branch,
-          pullRequest: output.pull_request.url
+          pullRequest: output.pull_request.url,
+          ...computeTelemetry(outputWithTarget, startTime)
         });
-        return withStructuredContent({
-          target: targetName,
-          ...output
-        });
+        return withStructuredContent(outputWithTarget);
       } catch (error) {
         const message = error instanceof Error ? error.message : "rename_note failed";
         logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
@@ -721,7 +752,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           target: target ?? config.defaultTarget,
           paths: [reference, destination_path],
           branch: branch_name,
-          error: message
+          error: message,
+          duration_ms: Date.now() - startTime
         });
         return toolError(message);
       }
@@ -761,6 +793,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
       pr_body
     }) => {
       const requestId = randomUUID();
+      const startTime = Date.now();
       const reference = id ?? path ?? "<missing>";
       logEvent("info", "tool_invoked", {
         requestId,
@@ -784,6 +817,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           ...(commit_message ? { commit_message } : {}),
           ...(pr_body ? { pr_body } : {})
         });
+        const outputWithTarget = { target: targetName, ...output };
         logEvent("info", "tool_completed", {
           requestId,
           tool: "move_note",
@@ -791,12 +825,10 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           target: targetName,
           paths: [output.previous_path, output.path],
           branch: output.branch,
-          pullRequest: output.pull_request.url
+          pullRequest: output.pull_request.url,
+          ...computeTelemetry(outputWithTarget, startTime)
         });
-        return withStructuredContent({
-          target: targetName,
-          ...output
-        });
+        return withStructuredContent(outputWithTarget);
       } catch (error) {
         const message = error instanceof Error ? error.message : "move_note failed";
         logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
@@ -806,7 +838,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           target: target ?? config.defaultTarget,
           paths: [reference, destination_dir],
           branch: branch_name,
-          error: message
+          error: message,
+          duration_ms: Date.now() - startTime
         });
         return toolError(message);
       }
@@ -833,6 +866,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     },
     async ({ target, path, mode, content, section_heading, expected_sha256 }) => {
       const requestId = randomUUID();
+      const startTime = Date.now();
       logEvent("info", "tool_invoked", {
         requestId,
         tool: "update_note_draft",
@@ -850,18 +884,17 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           ...(section_heading ? { section_heading } : {}),
           ...(expected_sha256 ? { expected_sha256 } : {})
         });
+        const outputWithTarget = { target: targetName, ...output };
         logEvent("info", "tool_completed", {
           requestId,
           tool: "update_note_draft",
           result: "success",
           target: targetName,
           paths: [output.path],
-          lineDelta: output.diff_summary.line_delta
+          lineDelta: output.diff_summary.line_delta,
+          ...computeTelemetry(outputWithTarget, startTime)
         });
-        return withStructuredContent({
-          target: targetName,
-          ...output
-        });
+        return withStructuredContent(outputWithTarget);
       } catch (error) {
         const message = error instanceof Error ? error.message : "update_note_draft failed";
         logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
@@ -870,7 +903,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           result: isRefusalError(error) ? "refusal" : "error",
           target: target ?? config.defaultTarget,
           paths: [path],
-          error: message
+          error: message,
+          duration_ms: Date.now() - startTime
         });
         return toolError(message);
       }
@@ -906,6 +940,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     },
     async ({ target, title, base_branch, branch_name, commit_message, pr_body, changes }) => {
       const requestId = randomUUID();
+      const startTime = Date.now();
       const changedPaths = changes.map((change) => change.path);
       logEvent("info", "tool_invoked", {
         requestId,
@@ -932,6 +967,7 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
             ...(change.expected_sha256 ? { expected_sha256: change.expected_sha256 } : {})
           }))
         });
+        const outputWithTarget = { target: targetName, ...output };
         logEvent("info", "tool_completed", {
           requestId,
           tool: "propose_change",
@@ -939,12 +975,10 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           target: targetName,
           paths: output.changed_files,
           branch: output.branch,
-          pullRequest: output.pull_request.url
+          pullRequest: output.pull_request.url,
+          ...computeTelemetry(outputWithTarget, startTime)
         });
-        return withStructuredContent({
-          target: targetName,
-          ...output
-        });
+        return withStructuredContent(outputWithTarget);
       } catch (error) {
         const message = error instanceof Error ? error.message : "propose_change failed";
         logEvent(isRefusalError(error) ? "warn" : "error", "tool_completed", {
@@ -954,7 +988,8 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
           target: target ?? config.defaultTarget,
           paths: changedPaths,
           branch: branch_name,
-          error: message
+          error: message,
+          duration_ms: Date.now() - startTime
         });
         return toolError(message);
       }
