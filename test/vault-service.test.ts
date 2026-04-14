@@ -899,3 +899,45 @@ test("rename_note keeps relocations inside a nested vault root", async () => {
     restoreFetch();
   }
 });
+
+test("readFileCached: cache miss on first read, hit on second read of unchanged file", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const before = service.getCacheStats();
+  assert.equal(before.hits, 0);
+  assert.equal(before.misses, 0);
+  assert.equal(before.size, 0);
+
+  await service.readNote("02-Work/TOR2e/specs/community.md");
+
+  const afterFirst = service.getCacheStats();
+  assert.equal(afterFirst.misses, 1);
+  assert.equal(afterFirst.hits, 0);
+  assert.equal(afterFirst.size, 1);
+
+  await service.readNote("02-Work/TOR2e/specs/community.md");
+
+  const afterSecond = service.getCacheStats();
+  assert.equal(afterSecond.misses, 1);
+  assert.equal(afterSecond.hits, 1);
+  assert.equal(afterSecond.size, 1);
+});
+
+test("readFileCached: cache is invalidated when file mtime changes", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  await service.readNote("02-Work/TOR2e/specs/community.md");
+
+  const notePath = path.join(vaultRepoRoot, "02-Work/TOR2e/specs/community.md");
+  await fs.writeFile(notePath, "# Community\n\nUpdated content.\n", "utf8");
+  const now = new Date(Date.now() + 1000);
+  await fs.utimes(notePath, now, now);
+
+  await service.readNote("02-Work/TOR2e/specs/community.md");
+
+  const stats = service.getCacheStats();
+  assert.equal(stats.misses, 2);
+  assert.equal(stats.hits, 0);
+});
