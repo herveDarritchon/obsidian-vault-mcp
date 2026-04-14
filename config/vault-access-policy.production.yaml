@@ -10,6 +10,7 @@ rules:
     paths:
       - Private/**
       - Secrets/**
+      - .config/**
       - 99-System/policy/**
       - 99-System/prompts/**
       - 99-System/schemas/**
