@@ -68,7 +68,6 @@ export interface OpenAISearchResult {
   id: string;
   title: string;
   path: string;
-  excerpt: string;
   url: string;
   text: string;
 }
@@ -81,7 +80,6 @@ export interface OpenAIFetchResult extends Record<string, unknown> {
   id: string;
   title: string;
   path: string;
-  content: string;
   text: string;
   url: string;
   metadata: Record<string, unknown>;
@@ -108,7 +106,7 @@ export interface UpdateDraftResult extends Record<string, unknown> {
   path: string;
   current_sha256: string;
   draft_sha256: string;
-  draft_content: string;
+  draft_content?: string;
   diff_summary: DraftDiffSummary;
   warnings: string[];
   policy: PolicyAccess;

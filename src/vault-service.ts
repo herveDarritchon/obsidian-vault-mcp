@@ -65,7 +65,10 @@ interface CachedNoteContent {
   metadata: NoteRetrievalMetadata;
 }
 
-type BasicSearchResult = Pick<SearchResult, "path" | "snippet" | "score">;
+type LexicalCandidate = Pick<SearchResult, "path" | "snippet" | "score">;
+type BasicSearchResult = LexicalCandidate & { descriptor: DocumentDescriptor };
+
+const CANDIDATE_POOL_SIZE = 200;
 
 interface SearchQueryContext {
   raw: string;
@@ -685,9 +688,6 @@ export class VaultService {
       requestedRoots.map((root) => root.absolutePath),
       trimmedQuery
     );
-    const lexicalScores = new Map<string, number>(
-      (ripgrepResults ?? []).map((result) => [result.path, result.score])
-    );
     const results: BasicSearchResult[] = [];
     const queryContext: SearchQueryContext = {
       raw: trimmedQuery,
@@ -695,18 +695,33 @@ export class VaultService {
       tokens: tokenizeSearchText(trimmedQuery)
     };
 
-    for (const root of requestedRoots) {
-      if (root.stats.isFile()) {
-        const relativePath = toVaultRelativePath(this.config.vaultRepoRoot, root.absolutePath);
-        await this.searchFile(relativePath, queryContext, results, lexicalScores.get(relativePath) ?? 0);
-      } else {
-        await this.searchDirectory(root.absolutePath, queryContext, lexicalScores, results);
+    if (ripgrepResults !== null && ripgrepResults.length > 0) {
+      // Two-stage: ripgrep output is the bounded candidate pool — skip full-vault walk
+      const pool = ripgrepResults.slice(0, CANDIDATE_POOL_SIZE);
+      await Promise.all(
+        pool.map((candidate) => this.searchFile(candidate.path, queryContext, results, candidate.score))
+      );
+    } else {
+      // Ripgrep unavailable or returned no lexical matches — bounded fuzzy walk
+      const emptyScores = new Map<string, number>();
+      const budget = { remaining: CANDIDATE_POOL_SIZE };
+      for (const root of requestedRoots) {
+        if (budget.remaining <= 0) {
+          break;
+        }
+        if (root.stats.isFile()) {
+          const relativePath = toVaultRelativePath(this.config.vaultRepoRoot, root.absolutePath);
+          await this.searchFile(relativePath, queryContext, results, 0);
+          budget.remaining--;
+        } else {
+          await this.searchDirectory(root.absolutePath, queryContext, emptyScores, results, budget);
+        }
       }
     }
 
     results.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
     return {
-      results: await Promise.all(results.slice(0, limit).map((result) => this.enrichSearchResult(result)))
+      results: results.slice(0, limit).map((result) => this.enrichSearchResult(result))
     };
   }
 
@@ -720,7 +735,6 @@ export class VaultService {
           id: note.id,
           title: note.title,
           path: note.path,
-          excerpt: result.snippet,
           url: note.url,
           text: result.snippet
         };
@@ -739,7 +753,6 @@ export class VaultService {
       id: note.id,
       title: note.title,
       path: note.path,
-      content: note.content,
       text: note.content,
       url: note.url,
       metadata: {
@@ -919,7 +932,7 @@ export class VaultService {
     }
   }
 
-  async updateNoteDraft(change: NoteChange): Promise<UpdateDraftResult> {
+  async updateNoteDraft(change: NoteChange & { include_draft_content?: boolean }): Promise<UpdateDraftResult> {
     const safePath = normalizeVaultPath(change.path);
     const access = this.policy.accessForPath(safePath);
 
@@ -948,7 +961,7 @@ export class VaultService {
       path: safePath,
       current_sha256: currentSha,
       draft_sha256: sha256(draft),
-      draft_content: draft,
+      ...(change.include_draft_content ? { draft_content: draft } : {}),
       diff_summary: buildDiffSummary(current, draft, change),
       warnings,
       policy: access
@@ -1189,7 +1202,7 @@ export class VaultService {
     descriptor: DocumentDescriptor,
     metadata: NoteRetrievalMetadata,
     lexicalBoost: number
-  ): BasicSearchResult | null {
+  ): LexicalCandidate | null {
     const matches: SearchFieldMatch[] = [];
     const pushMatch = (match: SearchFieldMatch | null) => {
       if (match && match.score > 0) {
@@ -1253,11 +1266,9 @@ export class VaultService {
     };
   }
 
-  private async enrichSearchResult(result: BasicSearchResult): Promise<SearchResult> {
-    const descriptor = await this.describeDocument(result.path);
-
+  private enrichSearchResult(result: BasicSearchResult): SearchResult {
     return {
-      ...descriptor,
+      ...result.descriptor,
       snippet: result.snippet,
       score: result.score
     };
@@ -1267,11 +1278,16 @@ export class VaultService {
     absoluteRoot: string,
     query: SearchQueryContext,
     lexicalScores: Map<string, number>,
-    results: BasicSearchResult[]
+    results: BasicSearchResult[],
+    budget?: { remaining: number }
   ): Promise<void> {
     const entries = await fs.readdir(absoluteRoot, { withFileTypes: true });
 
     for (const entry of entries) {
+      if (budget && budget.remaining <= 0) {
+        return;
+      }
+
       if (IGNORED_DIRECTORIES.has(entry.name)) {
         continue;
       }
@@ -1279,7 +1295,7 @@ export class VaultService {
       const absolutePath = path.join(absoluteRoot, entry.name);
 
       if (entry.isDirectory()) {
-        await this.searchDirectory(absolutePath, query, lexicalScores, results);
+        await this.searchDirectory(absolutePath, query, lexicalScores, results, budget);
         continue;
       }
 
@@ -1289,6 +1305,9 @@ export class VaultService {
 
       const relativePath = toVaultRelativePath(this.config.vaultRepoRoot, absolutePath);
       await this.searchFile(relativePath, query, results, lexicalScores.get(relativePath) ?? 0);
+      if (budget) {
+        budget.remaining--;
+      }
     }
   }
 
@@ -1350,7 +1369,7 @@ export class VaultService {
       return;
     }
 
-    results.push(result);
+    results.push({ ...result, descriptor });
   }
 
   private async resolveSearchRoots(roots: string[] | undefined) {
@@ -1394,7 +1413,7 @@ export class VaultService {
   private async searchWithRipgrep(
     absoluteRoots: string[],
     query: string
-  ): Promise<BasicSearchResult[] | null> {
+  ): Promise<LexicalCandidate[] | null> {
     const args = [
       "--json",
       "--fixed-strings",
@@ -1432,8 +1451,8 @@ export class VaultService {
     }
   }
 
-  private parseRipgrepResults(stdout: string, query: string): BasicSearchResult[] {
-    const aggregated = new Map<string, BasicSearchResult>();
+  private parseRipgrepResults(stdout: string, query: string): LexicalCandidate[] {
+    const aggregated = new Map<string, LexicalCandidate>();
 
     for (const line of stdout.split("\n")) {
       if (!line.trim()) {
