@@ -572,7 +572,13 @@ function decodeGitHubBlobPath(
   }
 }
 
+interface SearchCounters {
+  filesScanned: number;
+  filesRead: number;
+}
+
 export class VaultService {
+  private lastSearchStats: SearchCounters = { filesScanned: 0, filesRead: 0 };
   private static readonly NOTE_CACHE_MAX_SIZE = 500;
   private readonly noteCache = new Map<string, CachedNoteContent>();
   private cacheHits = 0;
@@ -719,6 +725,7 @@ export class VaultService {
       }
     }
 
+    this.lastSearchStats = counters;
     results.sort((left, right) => right.score - left.score || left.path.localeCompare(right.path));
     return {
       results: results.slice(0, limit).map((result) => this.enrichSearchResult(result))
@@ -1353,12 +1360,21 @@ export class VaultService {
     relativePath: string,
     query: SearchQueryContext,
     results: BasicSearchResult[],
-    lexicalBoost: number
+    lexicalBoost: number,
+    counters?: SearchCounters
   ): Promise<void> {
+    if (counters) {
+      counters.filesScanned++;
+    }
+
     const access = this.policy.accessForPath(relativePath);
 
     if (!access.read) {
       return;
+    }
+
+    if (counters) {
+      counters.filesRead++;
     }
 
     const absolutePath = resolveVaultPath(this.config.vaultRepoRoot, relativePath);
