@@ -26,6 +26,8 @@ const readNoteOutputSchema = {
   path: z.string(),
   url: z.string().url(),
   sha256: z.string(),
+  total_chars: z.number().int(),
+  truncated: z.boolean(),
   content: z.string(),
   policy: z.object(policySchemaDefinition)
 };
@@ -210,14 +212,17 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
       inputSchema: {
         target: optionalTargetSchema,
         id: z.string().optional(),
-        path: z.string().optional()
+        path: z.string().optional(),
+        max_chars: z.number().int().min(100).max(100_000).optional(),
+        start_line: z.number().int().min(1).optional(),
+        end_line: z.number().int().min(1).optional()
       },
       outputSchema: readNoteOutputSchema,
       annotations: {
         readOnlyHint: true
       }
     },
-    async ({ target, id, path }) => {
+    async ({ target, id, path, max_chars, start_line, end_line }) => {
       const requestId = randomUUID();
       const startTime = Date.now();
       const reference = id ?? path ?? "<missing>";
@@ -225,7 +230,10 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
         requestId,
         tool: "read_note",
         target: target ?? config.defaultTarget,
-        paths: [reference]
+        paths: [reference],
+        ...(max_chars !== undefined ? { max_chars } : {}),
+        ...(start_line !== undefined ? { start_line } : {}),
+        ...(end_line !== undefined ? { end_line } : {})
       });
 
       try {

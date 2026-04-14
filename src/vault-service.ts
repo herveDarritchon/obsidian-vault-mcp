@@ -28,6 +28,7 @@ import type {
   OpenAISearchResultSet,
   ProposeChangeResult,
   RenameNoteResult,
+  ReadNoteOptions,
   ReadNoteResult,
   ReadNoteExcerptResult,
   ReadSectionResult,
@@ -619,8 +620,8 @@ export class VaultService {
     );
   }
 
-  readNote(relativePath: string): Promise<ReadNoteResult> {
-    return this.readNoteFromRoot(this.config.vaultRepoRoot, relativePath);
+  readNote(relativePath: string, options?: ReadNoteOptions): Promise<ReadNoteResult> {
+    return this.readNoteFromRoot(this.config.vaultRepoRoot, relativePath, options);
   }
 
   async readSection(relativePath: string, sectionHeading: string): Promise<ReadSectionResult> {
