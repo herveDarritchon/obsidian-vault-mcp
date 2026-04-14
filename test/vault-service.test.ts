@@ -376,8 +376,8 @@ test("searchOpenAI returns OpenAI-compatible document results", async () => {
   );
   assert.equal(output.results[0]?.title, "Community");
   assert.equal(output.results[0]?.path, "02-Work/TOR2e/specs/community.md");
-  assert.match(output.results[0]?.excerpt ?? "", /Initial content/);
   assert.match(output.results[0]?.text ?? "", /Initial content/);
+  assert.equal("excerpt" in (output.results[0] ?? {}), false);
   assert.equal(
     output.results[0]?.url,
     "https://github.com/example/vault/blob/main/02-Work/TOR2e/specs/community.md"
@@ -443,8 +443,8 @@ test("fetchOpenAI returns full note contents and metadata", async () => {
   assert.match(output.id, /^obsidian-vault:v1:test:[A-Za-z0-9_-]+$/);
   assert.equal(output.title, "Community");
   assert.equal(output.path, "02-Work/TOR2e/specs/community.md");
-  assert.match(output.content, /## Chronicle tab/);
   assert.match(output.text, /## Chronicle tab/);
+  assert.equal("content" in output, false);
   assert.equal(
     output.url,
     "https://github.com/example/vault/blob/main/02-Work/TOR2e/specs/community.md"
@@ -707,7 +707,8 @@ test("propose-only paths allow draft generation but refuse propose_change", asyn
   const draft = await service.updateNoteDraft({
     path: "03-Knowledge/Concepts/memory.md",
     mode: "append",
-    content: "Additional reference note.\n"
+    content: "Additional reference note.\n",
+    include_draft_content: true
   });
 
   assert.equal(draft.policy.read, true);
@@ -715,7 +716,7 @@ test("propose-only paths allow draft generation but refuse propose_change", asyn
   assert.equal(draft.policy.proposePatch, true);
   assert.equal(draft.warnings.length, 1);
   assert.match(draft.warnings[0] ?? "", /propose-only/i);
-  assert.match(draft.draft_content, /Additional reference note/);
+  assert.match(draft.draft_content ?? "", /Additional reference note/);
 
   await assert.rejects(
     () =>
@@ -735,6 +736,37 @@ test("propose-only paths allow draft generation but refuse propose_change", asyn
       }),
     (error: unknown) => error instanceof RefusalError && /Write denied by policy/.test(error.message)
   );
+});
+
+test("update_note_draft omits draft_content by default (compact mode)", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const draft = await service.updateNoteDraft({
+    path: "02-Work/TOR2e/specs/community.md",
+    mode: "append",
+    content: "New line.\n"
+  });
+
+  assert.equal("draft_content" in draft, false);
+  assert.ok(draft.draft_sha256.length > 0);
+  assert.ok(draft.current_sha256.length > 0);
+  assert.equal(typeof draft.diff_summary.line_delta, "number");
+});
+
+test("update_note_draft returns draft_content when include_draft_content is true", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const draft = await service.updateNoteDraft({
+    path: "02-Work/TOR2e/specs/community.md",
+    mode: "append",
+    content: "New line.\n",
+    include_draft_content: true
+  });
+
+  assert.match(draft.draft_content ?? "", /New line\./);
+  assert.match(draft.draft_content ?? "", /# Community/);
 });
 
 test("propose_change keeps content writes inside a nested vault root", async () => {
@@ -868,17 +900,44 @@ test("rename_note keeps relocations inside a nested vault root", async () => {
   }
 });
 
-test("searchNotes: getLastSearchStats reflects files_scanned and files_read after a search", async () => {
+test("readFileCached: cache miss on first read, hit on second read of unchanged file", async () => {
   const vaultRepoRoot = await createVaultFixture();
   const service = await VaultService.create(makeConfig(vaultRepoRoot));
 
-  await service.searchNotes("community", undefined, 10);
+  const before = service.getCacheStats();
+  assert.equal(before.hits, 0);
+  assert.equal(before.misses, 0);
+  assert.equal(before.size, 0);
 
-  const stats = service.getLastSearchStats();
-  // The fixture has 5 markdown files: community.md, launch-post.md, memory.md,
-  // fellowship-memory.md (readable), and Secrets/token.md (denied by policy).
-  assert.ok(stats.filesScanned >= 4, `Expected at least 4 files scanned, got ${stats.filesScanned}`);
-  // files_read <= files_scanned (denied paths are not read)
-  assert.ok(stats.filesRead <= stats.filesScanned, "filesRead should not exceed filesScanned");
-  assert.ok(stats.filesRead >= 1, "Expected at least one readable file read");
+  await service.readNote("02-Work/TOR2e/specs/community.md");
+
+  const afterFirst = service.getCacheStats();
+  assert.equal(afterFirst.misses, 1);
+  assert.equal(afterFirst.hits, 0);
+  assert.equal(afterFirst.size, 1);
+
+  await service.readNote("02-Work/TOR2e/specs/community.md");
+
+  const afterSecond = service.getCacheStats();
+  assert.equal(afterSecond.misses, 1);
+  assert.equal(afterSecond.hits, 1);
+  assert.equal(afterSecond.size, 1);
+});
+
+test("readFileCached: cache is invalidated when file mtime changes", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  await service.readNote("02-Work/TOR2e/specs/community.md");
+
+  const notePath = path.join(vaultRepoRoot, "02-Work/TOR2e/specs/community.md");
+  await fs.writeFile(notePath, "# Community\n\nUpdated content.\n", "utf8");
+  const now = new Date(Date.now() + 1000);
+  await fs.utimes(notePath, now, now);
+
+  await service.readNote("02-Work/TOR2e/specs/community.md");
+
+  const stats = service.getCacheStats();
+  assert.equal(stats.misses, 2);
+  assert.equal(stats.hits, 0);
 });
