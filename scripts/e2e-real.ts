@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs";
+import path from "node:path";
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -17,7 +18,26 @@ import { logEvent } from "../src/logger.js";
 const execFileAsync = promisify(execFile);
 process.env.LOG_FORMAT ??= "silent";
 
-const envFile = process.env.E2E_ENV_FILE ?? ".env.e2e";
+function resolveE2eEnvFile(): string {
+  const configuredPath = process.env.E2E_ENV_FILE?.trim();
+  const manifestPath = process.env.VAULT_TARGET_MANIFEST_FILE?.trim();
+
+  if (configuredPath) {
+    if (path.isAbsolute(configuredPath) || !manifestPath) {
+      return configuredPath;
+    }
+
+    return path.resolve(path.dirname(manifestPath), configuredPath);
+  }
+
+  if (manifestPath) {
+    return path.resolve(path.dirname(manifestPath), ".env.e2e");
+  }
+
+  return ".env.e2e";
+}
+
+const envFile = resolveE2eEnvFile();
 
 function loadEnvFileIfPresent(path: string, override: boolean) {
   if (!fs.existsSync(path)) {

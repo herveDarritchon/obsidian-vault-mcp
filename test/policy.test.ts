@@ -37,6 +37,7 @@ test("policy can decide whether a search root is readable", async () => {
   assert.equal(policy.allowsReadBelow("02-Work/TOR2e/specs"), true);
   assert.equal(policy.allowsReadBelow("03-Knowledge/Technical"), true);
   assert.equal(policy.allowsReadBelow("Secrets"), false);
+  assert.equal(policy.allowsReadBelow(".config/policy"), false);
   assert.equal(policy.allowsReadBelow("99-System/policy"), false);
 });
 
