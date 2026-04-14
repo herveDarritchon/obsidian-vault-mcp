@@ -59,6 +59,8 @@ interface DocumentDescriptor {
 
 type BasicSearchResult = Pick<SearchResult, "path" | "snippet" | "score">;
 
+const CANDIDATE_POOL_SIZE = 200;
+
 interface SearchQueryContext {
   raw: string;
   normalized: string;
@@ -668,9 +670,6 @@ export class VaultService {
       requestedRoots.map((root) => root.absolutePath),
       trimmedQuery
     );
-    const lexicalScores = new Map<string, number>(
-      (ripgrepResults ?? []).map((result) => [result.path, result.score])
-    );
     const results: BasicSearchResult[] = [];
     const queryContext: SearchQueryContext = {
       raw: trimmedQuery,
@@ -678,12 +677,27 @@ export class VaultService {
       tokens: tokenizeSearchText(trimmedQuery)
     };
 
-    for (const root of requestedRoots) {
-      if (root.stats.isFile()) {
-        const relativePath = toVaultRelativePath(this.config.vaultRepoRoot, root.absolutePath);
-        await this.searchFile(relativePath, queryContext, results, lexicalScores.get(relativePath) ?? 0);
-      } else {
-        await this.searchDirectory(root.absolutePath, queryContext, lexicalScores, results);
+    if (ripgrepResults !== null && ripgrepResults.length > 0) {
+      // Two-stage: ripgrep output is the bounded candidate pool — skip full-vault walk
+      const pool = ripgrepResults.slice(0, CANDIDATE_POOL_SIZE);
+      await Promise.all(
+        pool.map((candidate) => this.searchFile(candidate.path, queryContext, results, candidate.score))
+      );
+    } else {
+      // Ripgrep unavailable or returned no lexical matches — bounded fuzzy walk
+      const emptyScores = new Map<string, number>();
+      const budget = { remaining: CANDIDATE_POOL_SIZE };
+      for (const root of requestedRoots) {
+        if (budget.remaining <= 0) {
+          break;
+        }
+        if (root.stats.isFile()) {
+          const relativePath = toVaultRelativePath(this.config.vaultRepoRoot, root.absolutePath);
+          await this.searchFile(relativePath, queryContext, results, 0);
+          budget.remaining--;
+        } else {
+          await this.searchDirectory(root.absolutePath, queryContext, emptyScores, results, budget);
+        }
       }
     }
 
@@ -1222,11 +1236,16 @@ export class VaultService {
     absoluteRoot: string,
     query: SearchQueryContext,
     lexicalScores: Map<string, number>,
-    results: BasicSearchResult[]
+    results: BasicSearchResult[],
+    budget?: { remaining: number }
   ): Promise<void> {
     const entries = await fs.readdir(absoluteRoot, { withFileTypes: true });
 
     for (const entry of entries) {
+      if (budget && budget.remaining <= 0) {
+        return;
+      }
+
       if (IGNORED_DIRECTORIES.has(entry.name)) {
         continue;
       }
@@ -1234,7 +1253,7 @@ export class VaultService {
       const absolutePath = path.join(absoluteRoot, entry.name);
 
       if (entry.isDirectory()) {
-        await this.searchDirectory(absolutePath, query, lexicalScores, results);
+        await this.searchDirectory(absolutePath, query, lexicalScores, results, budget);
         continue;
       }
 
@@ -1244,6 +1263,9 @@ export class VaultService {
 
       const relativePath = toVaultRelativePath(this.config.vaultRepoRoot, absolutePath);
       await this.searchFile(relativePath, query, results, lexicalScores.get(relativePath) ?? 0);
+      if (budget) {
+        budget.remaining--;
+      }
     }
   }
 
