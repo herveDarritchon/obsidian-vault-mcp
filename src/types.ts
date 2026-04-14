@@ -18,12 +18,20 @@ export interface NoteChange {
   expected_sha256?: string | undefined;
 }
 
+export interface ReadNoteOptions {
+  maxChars?: number;
+  startLine?: number;
+  endLine?: number;
+}
+
 export interface ReadNoteResult extends Record<string, unknown> {
   id: string;
   title: string;
   path: string;
   url: string;
   sha256: string;
+  total_chars: number;
+  truncated: boolean;
   content: string;
   policy: PolicyAccess;
 }

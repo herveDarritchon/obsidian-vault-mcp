@@ -26,6 +26,8 @@ const readNoteOutputSchema = {
   path: z.string(),
   url: z.string().url(),
   sha256: z.string(),
+  total_chars: z.number().int(),
+  truncated: z.boolean(),
   content: z.string(),
   policy: z.object(policySchemaDefinition)
 };
@@ -191,37 +193,51 @@ function createMcpServer(config: AppConfig, services: Map<string, VaultService>)
     "read_note",
     {
       title: "Read Obsidian note",
-      description: "Reads a note from the vault after policy checks.",
+      description:
+        "Reads a note from the vault after policy checks. " +
+        "Use max_chars to cap response size on large notes (prefer read_note_excerpt for summaries). " +
+        "Use start_line and end_line to fetch a specific line range when you know the structure.",
       inputSchema: {
         target: optionalTargetSchema,
         id: z.string().optional(),
-        path: z.string().optional()
+        path: z.string().optional(),
+        max_chars: z.number().int().min(100).max(100_000).optional(),
+        start_line: z.number().int().min(1).optional(),
+        end_line: z.number().int().min(1).optional()
       },
       outputSchema: readNoteOutputSchema,
       annotations: {
         readOnlyHint: true
       }
     },
-    async ({ target, id, path }) => {
+    async ({ target, id, path, max_chars, start_line, end_line }) => {
       const requestId = randomUUID();
       const reference = id ?? path ?? "<missing>";
       logEvent("info", "tool_invoked", {
         requestId,
         tool: "read_note",
         target: target ?? config.defaultTarget,
-        paths: [reference]
+        paths: [reference],
+        ...(max_chars !== undefined ? { max_chars } : {}),
+        ...(start_line !== undefined ? { start_line } : {}),
+        ...(end_line !== undefined ? { end_line } : {})
       });
 
       try {
         const { targetName, service } = resolveTarget(target);
         const safePath = service.resolveReadReference({ id, path });
-        const output = await service.readNote(safePath);
+        const output = await service.readNote(safePath, {
+          ...(max_chars !== undefined ? { maxChars: max_chars } : {}),
+          ...(start_line !== undefined ? { startLine: start_line } : {}),
+          ...(end_line !== undefined ? { endLine: end_line } : {})
+        });
         logEvent("info", "tool_completed", {
           requestId,
           tool: "read_note",
           result: "success",
           target: targetName,
-          paths: [output.path]
+          paths: [output.path],
+          truncated: output.truncated
         });
         return withStructuredContent({
           target: targetName,

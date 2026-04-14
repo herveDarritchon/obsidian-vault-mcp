@@ -28,6 +28,7 @@ import type {
   OpenAISearchResultSet,
   ProposeChangeResult,
   RenameNoteResult,
+  ReadNoteOptions,
   ReadNoteResult,
   ReadNoteExcerptResult,
   ReadSectionResult,
@@ -593,8 +594,8 @@ export class VaultService {
     );
   }
 
-  readNote(relativePath: string): Promise<ReadNoteResult> {
-    return this.readNoteFromRoot(this.config.vaultRepoRoot, relativePath);
+  readNote(relativePath: string, options?: ReadNoteOptions): Promise<ReadNoteResult> {
+    return this.readNoteFromRoot(this.config.vaultRepoRoot, relativePath, options);
   }
 
   async readSection(relativePath: string, sectionHeading: string): Promise<ReadSectionResult> {
@@ -1069,7 +1070,11 @@ export class VaultService {
     }
   }
 
-  private async readNoteFromRoot(root: string, relativePath: string): Promise<ReadNoteResult> {
+  private async readNoteFromRoot(
+    root: string,
+    relativePath: string,
+    options?: ReadNoteOptions
+  ): Promise<ReadNoteResult> {
     const safePath = normalizeVaultPath(relativePath);
     const access = this.policy.accessForPath(safePath);
 
@@ -1078,13 +1083,28 @@ export class VaultService {
     }
 
     const absolutePath = resolveVaultPath(root, safePath);
-    const content = await fs.readFile(absolutePath, "utf8");
-    const descriptor = this.buildDocumentDescriptor(safePath, content);
+    const fullContent = await fs.readFile(absolutePath, "utf8");
+    const descriptor = this.buildDocumentDescriptor(safePath, fullContent);
+    const totalChars = fullContent.length;
+    let content = fullContent;
+
+    if (options?.startLine !== undefined || options?.endLine !== undefined) {
+      const lines = fullContent.split("\n");
+      const startIdx = (options.startLine ?? 1) - 1;
+      const endIdx = options.endLine !== undefined ? options.endLine : lines.length;
+      content = lines.slice(startIdx, endIdx).join("\n");
+    }
+
+    if (options?.maxChars !== undefined && content.length > options.maxChars) {
+      content = content.slice(0, options.maxChars);
+    }
 
     return {
       ...descriptor,
       path: safePath,
-      sha256: sha256(content),
+      sha256: sha256(fullContent),
+      total_chars: totalChars,
+      truncated: content.length < totalChars,
       content,
       policy: access
     };

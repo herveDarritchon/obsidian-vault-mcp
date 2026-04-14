@@ -214,6 +214,50 @@ test("read_note returns stable document metadata alongside content", async () =>
   );
   assert.match(output.content, /^# Community/m);
   assert.ok(output.sha256.length > 0);
+  assert.equal(output.truncated, false);
+  assert.equal(output.total_chars, output.content.length);
+});
+
+test("read_note max_chars truncates content and sets truncated=true", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const full = await service.readNote("02-Work/TOR2e/specs/community.md");
+  const maxChars = 10;
+  const output = await service.readNote("02-Work/TOR2e/specs/community.md", { maxChars });
+
+  assert.equal(output.content.length, maxChars);
+  assert.equal(output.truncated, true);
+  assert.equal(output.total_chars, full.content.length);
+  assert.equal(output.sha256, full.sha256);
+});
+
+test("read_note start_line and end_line return the specified line range", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  // community.md line 1: "# Community", line 2: "", line 3: "## Chronicle tab"
+  const output = await service.readNote("02-Work/TOR2e/specs/community.md", {
+    startLine: 1,
+    endLine: 1
+  });
+
+  assert.equal(output.content, "# Community");
+  assert.equal(output.truncated, true);
+});
+
+test("read_note line range combined with max_chars applies both bounds", async () => {
+  const vaultRepoRoot = await createVaultFixture();
+  const service = await VaultService.create(makeConfig(vaultRepoRoot));
+
+  const output = await service.readNote("02-Work/TOR2e/specs/community.md", {
+    startLine: 1,
+    endLine: 3,
+    maxChars: 5
+  });
+
+  assert.equal(output.content.length, 5);
+  assert.equal(output.truncated, true);
 });
 
 test("read_note prefers the frontmatter title when present", async () => {
